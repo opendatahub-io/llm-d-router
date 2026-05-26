@@ -31,80 +31,73 @@ package mocks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/contracts"
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/flowcontrol"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/flowcontrol/mocks"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/flowcontrol"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/flowcontrol/mocks"
 )
 
-// --- RegistryShard Mocks ---
+// --- RegistryDataPlane Mocks ---
 
-// MockRegistryShard is a simple "stub-style" mock for testing.
+// MockRegistryDataPlane is a simple "stub-style" mock for testing.
 // Its methods are implemented as function fields (e.g., `IDFunc`). A test can inject behavior by setting the desired
 // function field in the test setup. If a func is nil, the method will return a zero value.
-type MockRegistryShard struct {
-	IDFunc                       func() string
-	IsActiveFunc                 func() bool
+type MockRegistryDataPlane struct {
 	ManagedQueueFunc             func(key flowcontrol.FlowKey) (contracts.ManagedQueue, error)
 	FairnessPolicyFunc           func(priority int) (flowcontrol.FairnessPolicy, error)
 	PriorityBandAccessorFunc     func(priority int) (flowcontrol.PriorityBandAccessor, error)
 	AllOrderedPriorityLevelsFunc func() []int
-	StatsFunc                    func() contracts.ShardStats
+	StatsFunc                    func() contracts.AggregateStats
+	WithConnectionFunc           func(key flowcontrol.FlowKey, fn func(conn contracts.ActiveFlowConnection) error) error
 }
 
-func (m *MockRegistryShard) ID() string {
-	if m.IDFunc != nil {
-		return m.IDFunc()
-	}
-	return ""
-}
-
-func (m *MockRegistryShard) IsActive() bool {
-	if m.IsActiveFunc != nil {
-		return m.IsActiveFunc()
-	}
-	return false
-}
-
-func (m *MockRegistryShard) ManagedQueue(key flowcontrol.FlowKey) (contracts.ManagedQueue, error) {
+func (m *MockRegistryDataPlane) ManagedQueue(key flowcontrol.FlowKey) (contracts.ManagedQueue, error) {
 	if m.ManagedQueueFunc != nil {
 		return m.ManagedQueueFunc(key)
 	}
-	return nil, nil
+	return &MockManagedQueue{FlowKeyV: key}, nil
 }
 
-func (m *MockRegistryShard) FairnessPolicy(priority int) (flowcontrol.FairnessPolicy, error) {
+func (m *MockRegistryDataPlane) FairnessPolicy(priority int) (flowcontrol.FairnessPolicy, error) {
 	if m.FairnessPolicyFunc != nil {
 		return m.FairnessPolicyFunc(priority)
 	}
-	return nil, nil
+	return nil, errors.New("sentinel error for mock shard")
 }
 
-func (m *MockRegistryShard) PriorityBandAccessor(priority int) (flowcontrol.PriorityBandAccessor, error) {
+func (m *MockRegistryDataPlane) PriorityBandAccessor(priority int) (flowcontrol.PriorityBandAccessor, error) {
 	if m.PriorityBandAccessorFunc != nil {
 		return m.PriorityBandAccessorFunc(priority)
 	}
-	return nil, nil
+	return nil, errors.New("sentinel error for mock shard")
 }
 
-func (m *MockRegistryShard) AllOrderedPriorityLevels() []int {
+func (m *MockRegistryDataPlane) AllOrderedPriorityLevels() []int {
 	if m.AllOrderedPriorityLevelsFunc != nil {
 		return m.AllOrderedPriorityLevelsFunc()
 	}
 	return nil
 }
 
-func (m *MockRegistryShard) Stats() contracts.ShardStats {
+func (m *MockRegistryDataPlane) Stats() contracts.AggregateStats {
 	if m.StatsFunc != nil {
 		return m.StatsFunc()
 	}
-	return contracts.ShardStats{}
+	return contracts.AggregateStats{}
 }
 
-var _ contracts.RegistryShard = &MockRegistryShard{}
+func (m *MockRegistryDataPlane) WithConnection(key flowcontrol.FlowKey, fn func(conn contracts.ActiveFlowConnection) error) error {
+	if m.WithConnectionFunc != nil {
+		return m.WithConnectionFunc(key, fn)
+	}
+	return nil
+}
+
+var _ contracts.FlowRegistryDataPlane = &MockRegistryDataPlane{}
 
 // --- Dependency Mocks ---
 
@@ -184,7 +177,7 @@ func (m *MockSafeQueue) Remove(handle flowcontrol.QueueItemHandle) (flowcontrol.
 	if m.RemoveFunc != nil {
 		return m.RemoveFunc(handle)
 	}
-	return nil, nil
+	return nil, errors.New("sentinel error for mock queue")
 }
 
 func (m *MockSafeQueue) Cleanup(predicate contracts.PredicateFunc) []flowcontrol.QueueItemAccessor {

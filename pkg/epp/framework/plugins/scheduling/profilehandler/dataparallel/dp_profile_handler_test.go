@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/common/routing"
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/plugin"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/scheduling"
-	"github.com/llm-d/llm-d-inference-scheduler/test/utils"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	"github.com/llm-d/llm-d-router/test/utils"
 )
 
 const DefaultTestPodPort = "8000"
@@ -123,7 +123,7 @@ func TestProfileHandlerFactory(t *testing.T) {
 				rawParams = json.RawMessage(tt.jsonParams)
 			}
 			handle := plugin.NewEppHandle(utils.NewTestContext(t), nil)
-			plugin, err := ProfileHandlerFactory(tt.pluginName, rawParams, handle)
+			plugin, err := ProfileHandlerFactory(tt.pluginName, plugin.StrictDecoder(rawParams), handle)
 
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -160,7 +160,7 @@ func TestProfileHandlerFactoryInvalidJSON(t *testing.T) {
 
 			rawParams := json.RawMessage(tt.jsonParams)
 			handle := plugin.NewEppHandle(utils.NewTestContext(t), nil)
-			plugin, err := ProfileHandlerFactory("test", rawParams, handle)
+			plugin, err := ProfileHandlerFactory("test", plugin.StrictDecoder(rawParams), handle)
 
 			assert.Error(t, err)
 			assert.Nil(t, plugin)

@@ -17,7 +17,7 @@ limitations under the License.
 package datalayer
 
 import (
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 )
 
 // Config defines the configuration of EPP data layer, as the set of DataSources
@@ -30,6 +30,6 @@ type Config struct {
 
 // DataSourceConfig defines the configuration of a specific DataSource
 type DataSourceConfig struct {
-	Plugin     fwkdl.DataSource  // the data source plugin instance
-	Extractors []fwkdl.Extractor // extractors defined for the data source
+	Plugin     fwkdl.DataSource      // the data source plugin instance
+	Extractors []fwkdl.ExtractorBase // extractors defined for the data source
 }

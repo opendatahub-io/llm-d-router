@@ -4,17 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/plugin"
-	fwkrh "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/requesthandling"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/scheduling"
-	approxprefix "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/attribute/prefix"
-	"github.com/llm-d/llm-d-inference-scheduler/test/utils"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
+	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
+	"github.com/llm-d/llm-d-router/test/utils"
 )
 
 // ── Shared test helpers ──────────────────────────────────────────────────────
@@ -77,7 +79,7 @@ func completionsRequest(prompt string) *scheduling.InferenceRequest {
 func chatRequest(hasImage, hasVideo, hasAudio bool) *scheduling.InferenceRequest {
 	blocks := []fwkrh.ContentBlock{{Type: "text", Text: "describe this"}}
 	if hasImage {
-		blocks = append(blocks, fwkrh.ContentBlock{Type: "image_url", ImageURL: fwkrh.ImageBlock{Url: "https://example.com/img.jpg"}})
+		blocks = append(blocks, fwkrh.ContentBlock{Type: "image_url", ImageURL: fwkrh.ImageBlock{URL: "https://example.com/img.jpg"}})
 	}
 	if hasVideo {
 		blocks = append(blocks, fwkrh.ContentBlock{Type: "video_url"})
@@ -107,8 +109,8 @@ func injectPrefixCache(profileResults map[string]*scheduling.ProfileRunResult, c
 		return
 	}
 	for _, ep := range res.TargetEndpoints {
-		ep.Put(approxprefix.PrefixCacheMatchInfoKey,
-			approxprefix.NewPrefixCacheMatchInfo(cachedTokens, inputTokens, 1))
+		ep.Put(attrprefix.PrefixCacheMatchInfoDataKey.String(),
+			attrprefix.NewPrefixCacheMatchInfo(cachedTokens, inputTokens, 1))
 	}
 }
 
@@ -224,7 +226,7 @@ func TestHandlerFactory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b, _ := json.Marshal(tt.params)
-			p, err := HandlerFactory("h", b, handle)
+			p, err := HandlerFactory("h", plugin.StrictDecoder(b), handle)
 			if tt.expectErr {
 				assert.Error(t, err)
 				assert.Nil(t, p)
@@ -257,10 +259,10 @@ func TestHandlerFactory_DeprecatedFlatParams(t *testing.T) {
 			"encodeProfile":            "my-encode",
 			"prefillDeciderPluginName": PrefixBasedPDDeciderPluginType,
 		}, false},
-		{"nested format with unknown extra fields is accepted", map[string]any{
+		{"nested format with unknown extra fields is rejected", map[string]any{
 			"profiles":     map[string]any{"decode": "decode"},
 			"unknownField": "ignored",
-		}, false},
+		}, true},
 		{"mixing deprecated and nested fields is an error", map[string]any{
 			"decodeProfile": "my-decode",
 			"profiles":      map[string]any{"decode": "other-decode"},
@@ -273,7 +275,7 @@ func TestHandlerFactory_DeprecatedFlatParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b, _ := json.Marshal(tt.params)
-			p, err := HandlerFactory("h", b, handle)
+			p, err := HandlerFactory("h", plugin.StrictDecoder(b), handle)
 			if tt.expectErr {
 				assert.Error(t, err)
 				assert.Nil(t, p)
@@ -303,14 +305,14 @@ func TestHandlerFactory_PdProfileHandlerParams(t *testing.T) {
 			"prefillProfile":    "prefill",
 			"deciderPluginName": PrefixBasedPDDeciderPluginType,
 		}, false},
-		{"pd-profile-handler with all params including ignored fields", map[string]any{
+		{"pd-profile-handler with unknown fields is rejected", map[string]any{
 			"decodeProfile":     "decode",
 			"prefillProfile":    "prefill",
 			"deciderPluginName": PrefixBasedPDDeciderPluginType,
-			"prefixPluginType":  "prefix-cache-scorer", // ignored by Handler
-			"prefixPluginName":  "prefix-cache-scorer", // ignored by Handler
-			"primaryPort":       8080,                  // ignored by Handler
-		}, false},
+			"prefixPluginType":  "prefix-cache-scorer", // unknown to both schemas (#1068)
+			"prefixPluginName":  "prefix-cache-scorer",
+			"primaryPort":       8080,
+		}, true},
 		{"pd-profile-handler unknown deciderPluginName", map[string]any{
 			"deciderPluginName": "INVALID",
 		}, true},
@@ -318,7 +320,7 @@ func TestHandlerFactory_PdProfileHandlerParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b, _ := json.Marshal(tt.params)
-			p, err := HandlerFactory("h", b, handle)
+			p, err := HandlerFactory("h", plugin.StrictDecoder(b), handle)
 			if tt.expectErr {
 				assert.Error(t, err)
 				assert.Nil(t, p)
@@ -334,7 +336,7 @@ func TestHandlerFactory_InvalidJSON(t *testing.T) {
 	ctx := utils.NewTestContext(t)
 	handle := handleWithDeciders(ctx)
 	for _, raw := range []string{`{"deciders": `} {
-		p, err := HandlerFactory("h", json.RawMessage(raw), handle)
+		p, err := HandlerFactory("h", plugin.StrictDecoder(json.RawMessage(raw)), handle)
 		assert.Error(t, err)
 		assert.Nil(t, p)
 	}
@@ -1279,7 +1281,7 @@ func TestHandler_Factory_NilDeciders(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b, _ := json.Marshal(tt.params)
-			p, err := HandlerFactory("h", b, handle)
+			p, err := HandlerFactory("h", plugin.StrictDecoder(b), handle)
 			if tt.expectErr {
 				assert.Error(t, err, tt.description)
 				assert.Nil(t, p)
@@ -1289,4 +1291,45 @@ func TestHandler_Factory_NilDeciders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBothProfileAndHeadersHandlerPreRequest verifies that when both
+// disagg-profile-handler and the deprecated disagg-headers-handler are
+// active, both PreRequest hooks run without error. The result is redundant
+// (same header written twice) but not conflicting.
+func TestBothProfileAndHeadersHandlerPreRequest(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+
+	profileHandler := NewDisaggProfileHandler("decode", "prefill", "encode", nil, nil).WithName("profile")
+	headersHandler := NewHeadersHandler("prefill", "encode").WithName("headers") //nolint:staticcheck // intentional: testing deprecated path
+
+	podAddr := "10.0.0.5"
+	podPort := "8080"
+	ep := scheduling.NewEndpoint(
+		&fwkdl.EndpointMetadata{
+			NamespacedName: k8stypes.NamespacedName{Namespace: "default", Name: "prefill-pod"},
+			Address:        podAddr,
+			Port:           podPort,
+		},
+		&fwkdl.Metrics{},
+		nil,
+	)
+
+	request := &scheduling.InferenceRequest{
+		RequestID: "req-both",
+		Headers:   map[string]string{},
+	}
+	result := &scheduling.SchedulingResult{
+		PrimaryProfileName: "decode",
+		ProfileResults: map[string]*scheduling.ProfileRunResult{
+			"prefill": {TargetEndpoints: []scheduling.Endpoint{ep}},
+		},
+	}
+
+	profileHandler.PreRequest(ctx, request, result)
+	headersHandler.PreRequest(ctx, request, result)
+
+	expected := net.JoinHostPort(podAddr, podPort)
+	assert.Equal(t, expected, request.Headers[routing.PrefillEndpointHeader],
+		"both handlers set the same prefill header — redundant but no conflict")
 }

@@ -33,12 +33,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
-	"sigs.k8s.io/gateway-api-inference-extension/apix/v1alpha2"
 
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/backend/metrics"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/datastore"
-	pooltuil "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/util/pool"
-	testutil "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/util/testing"
+	"github.com/llm-d/llm-d-router/apix/v1alpha2"
+	"github.com/llm-d/llm-d-router/pkg/epp/backend/metrics"
+	"github.com/llm-d/llm-d-router/pkg/epp/datastore"
+	poolutil "github.com/llm-d/llm-d-router/pkg/epp/util/pool"
+	testutil "github.com/llm-d/llm-d-router/pkg/epp/util/testing"
 )
 
 const bufSize = 1024 * 1024
@@ -73,17 +73,17 @@ func PrepareForTestStreamingServer(objectives []*v1alpha2.InferenceObjective, po
 		Build()
 	pool := testutil.MakeInferencePool(poolName).Namespace(namespace).ObjRef()
 	pool.Spec.TargetPorts = []v1.Port{{Number: v1.PortNumber(poolPort)}}
-	_ = ds.PoolSet(context.Background(), fakeClient, pooltuil.InferencePoolToEndpointPool(pool))
+	_ = ds.PoolSet(context.Background(), fakeClient, poolutil.InferencePoolToEndpointPool(pool))
 
 	return ctx, cancel, ds, pmc
 }
 
-func SetupTestStreamingServer(t *testing.T, ctx context.Context, streamingServer pb.ExternalProcessorServer) (*bufconn.Listener, chan error) {
+func SetupTestStreamingServer(ctx context.Context, t *testing.T, streamingServer pb.ExternalProcessorServer) (*bufconn.Listener, chan error) {
 	testListener = bufconn.Listen(bufSize)
 
 	errChan := make(chan error)
 	go func() {
-		err := LaunchTestGRPCServer(streamingServer, ctx, testListener)
+		err := LaunchTestGRPCServer(ctx, streamingServer, testListener)
 		if err != nil {
 			t.Error("Error launching listener", err)
 		}
@@ -120,7 +120,7 @@ func GetStreamingServerClient(ctx context.Context, t *testing.T) (pb.ExternalPro
 }
 
 // LaunchTestGRPCServer actually starts the server (enables testing)
-func LaunchTestGRPCServer(s pb.ExternalProcessorServer, ctx context.Context, listener net.Listener) error {
+func LaunchTestGRPCServer(ctx context.Context, s pb.ExternalProcessorServer, listener net.Listener) error {
 	grpcServer := grpc.NewServer()
 
 	pb.RegisterExternalProcessorServer(grpcServer, s)
@@ -132,11 +132,7 @@ func LaunchTestGRPCServer(s pb.ExternalProcessorServer, ctx context.Context, lis
 		grpcServer.GracefulStop()
 	}()
 
-	if err := grpcServer.Serve(listener); err != nil {
-		return err
-	}
-
-	return nil
+	return grpcServer.Serve(listener)
 }
 
 func CheckEnvoyGRPCHeaders(t *testing.T, response *pb.CommonResponse, expectedHeaders map[string]string) bool {

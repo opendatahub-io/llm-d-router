@@ -28,10 +28,10 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	logutil "github.com/llm-d/llm-d-inference-scheduler/pkg/common/observability/logging"
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	fwkplugin "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/plugin"
-	sourcemetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/source/metrics"
+	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	sourcemetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/metrics"
 )
 
 const (
@@ -187,7 +187,10 @@ func (ext *Extractor) Extract(ctx context.Context, data any, ep fwkdl.Endpoint) 
 	logger := log.FromContext(ctx).WithValues("endpoint", ep.GetMetadata().NamespacedName)
 	if updated {
 		clone.UpdateTime = time.Now()
-		logger.V(logutil.TRACE).Info("Refreshed metrics", "updated", clone)
+		logger.V(logutil.TRACE).Info("Refreshed metrics",
+			"metrics", mapping.MetricNames(),
+			"updated", clone,
+		)
 		ep.UpdateMetrics(clone)
 	}
 
@@ -206,7 +209,10 @@ func getEngineTypeFromEndpoint(ep fwkdl.Endpoint, labelKey string) string {
 
 	engineType, ok := meta.Labels[labelKey]
 	if !ok || engineType == "" {
-		return DefaultEngineType
+		engineType, ok = meta.Labels[legacyGAIEEngineTypeLabelKey]
+		if !ok || engineType == "" {
+			return DefaultEngineType
+		}
 	}
 
 	return engineType

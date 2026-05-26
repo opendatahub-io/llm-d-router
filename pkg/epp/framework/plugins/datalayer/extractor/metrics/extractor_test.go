@@ -27,8 +27,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"k8s.io/utils/ptr"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	sourcemetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/source/metrics"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	sourcemetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/metrics"
 )
 
 const (
@@ -505,7 +506,7 @@ func TestCoreMetricsExtractorFactoryDefaultEngine(t *testing.T) {
 			checkDefault: "custom",
 		},
 		{
-			name: "custom engineConfigs auto-appends vllm sglang trtllm-serve and triton-tensorrt-llm",
+			name: "custom engineConfigs auto-appends vllm sglang trtllm-serve triton-tensorrt-llm and triton",
 			params: map[string]any{
 				"engineConfigs": []map[string]any{
 					{
@@ -524,6 +525,14 @@ func TestCoreMetricsExtractorFactoryDefaultEngine(t *testing.T) {
 			},
 			wantErr:      false,
 			checkDefault: "triton-tensorrt-llm",
+		},
+		{
+			name: "defaultEngine triton",
+			params: map[string]any{
+				"defaultEngine": "triton",
+			},
+			wantErr:      false,
+			checkDefault: "triton",
 		},
 		{
 			name: "custom engineConfigs with custom vllm preserves user config",
@@ -615,7 +624,7 @@ func TestCoreMetricsExtractorFactoryDefaultEngine(t *testing.T) {
 				}
 			}
 
-			plugin, err := CoreMetricsExtractorFactory("test", params, nil)
+			plugin, err := CoreMetricsExtractorFactory("test", fwkplugin.StrictDecoder(params), nil)
 
 			if tt.wantErr {
 				if err == nil {
@@ -663,5 +672,92 @@ func TestCoreMetricsExtractorFactoryDefaultEngine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGetEngineTypeFromEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		labelKey string
+		want     string
+	}{
+		{
+			name:     "new label key",
+			labels:   map[string]string{DefaultEngineTypeLabelKey: "vllm"},
+			labelKey: DefaultEngineTypeLabelKey,
+			want:     "vllm",
+		},
+		{
+			name:     "legacy GAIE label key fallback",
+			labels:   map[string]string{legacyGAIEEngineTypeLabelKey: "sglang"},
+			labelKey: DefaultEngineTypeLabelKey,
+			want:     "sglang",
+		},
+		{
+			name: "new label key takes precedence over legacy GAIE key",
+			labels: map[string]string{
+				DefaultEngineTypeLabelKey:    "vllm",
+				legacyGAIEEngineTypeLabelKey: "sglang",
+			},
+			labelKey: DefaultEngineTypeLabelKey,
+			want:     "vllm",
+		},
+		{
+			name:     "no labels returns default",
+			labels:   map[string]string{},
+			labelKey: DefaultEngineTypeLabelKey,
+			want:     DefaultEngineType,
+		},
+		{
+			name:     "nil labels returns default",
+			labels:   nil,
+			labelKey: DefaultEngineTypeLabelKey,
+			want:     DefaultEngineType,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ep := fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{Labels: tt.labels}, nil)
+			got := getEngineTypeFromEndpoint(ep, tt.labelKey)
+			if got != tt.want {
+				t.Errorf("getEngineTypeFromEndpoint() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultEngineConfigsTritonValues(t *testing.T) {
+	var tritonConfig *engineConfigParams
+	for _, config := range defaultEngineConfigs {
+		if config.Name == "triton" {
+			// Create a local copy to point to
+			c := config
+			tritonConfig = &c
+			break
+		}
+	}
+
+	if tritonConfig == nil {
+		t.Fatalf("Expected to find 'triton' in defaultEngineConfigs, but it was not found")
+	}
+
+	expectedQueued := "nv_inference_pending_request_count"
+	if tritonConfig.QueuedRequestsSpec != expectedQueued {
+		t.Errorf("triton QueuedRequestsSpec = %q, want %q", tritonConfig.QueuedRequestsSpec, expectedQueued)
+	}
+
+	expectedRunning := "nv_inference_exec_count"
+	if tritonConfig.RunningRequestsSpec != expectedRunning {
+		t.Errorf("triton RunningRequestsSpec = %q, want %q", tritonConfig.RunningRequestsSpec, expectedRunning)
+	}
+
+	// Verify LLM-specific metrics are intentionally empty
+	if tritonConfig.KVUsageSpec != "" {
+		t.Errorf("triton KVUsageSpec = %q, want empty string", tritonConfig.KVUsageSpec)
+	}
+	if tritonConfig.LoRASpec != "" {
+		t.Errorf("triton LoRASpec = %q, want empty string", tritonConfig.LoRASpec)
 	}
 }

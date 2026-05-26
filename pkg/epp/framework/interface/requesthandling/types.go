@@ -456,7 +456,7 @@ type ContentBlock struct {
 }
 
 type ImageBlock struct {
-	Url string `json:"url,omitempty"`
+	URL string `json:"url,omitempty"`
 }
 
 type AudioBlock struct {
@@ -465,7 +465,7 @@ type AudioBlock struct {
 }
 
 type VideoBlock struct {
-	Url string `json:"url,omitempty"`
+	URL string `json:"url,omitempty"`
 }
 
 // UnmarshalJSON allow use both format
@@ -516,7 +516,7 @@ type Usage struct {
 	PromptTokens       int                 `json:"prompt_tokens"`
 	CompletionTokens   int                 `json:"completion_tokens"`
 	TotalTokens        int                 `json:"total_tokens"`
-	PromptTokenDetails *PromptTokenDetails `json:"prompt_token_details,omitempty"`
+	PromptTokenDetails *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type PromptTokenDetails struct {

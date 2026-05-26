@@ -28,11 +28,11 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/utils/clock"
 
-	logutil "github.com/llm-d/llm-d-inference-scheduler/pkg/common/observability/logging"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/contracts"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/types"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/flowcontrol"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/metrics"
+	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/types"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/flowcontrol"
+	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
 )
 
 // maxCleanupWorkers caps the number of concurrent workers for background cleanup tasks. This prevents a single shard
@@ -66,7 +66,7 @@ var ErrProcessorBusy = errors.New("shard processor is busy")
 // inherently atomic without coarse-grained locks.
 type ShardProcessor struct {
 	poolName             string
-	shard                contracts.RegistryShard
+	registry             contracts.FlowRegistry
 	saturationDetector   flowcontrol.SaturationDetector
 	endpointCandidates   contracts.EndpointCandidates
 	usageLimitPolicy     flowcontrol.UsageLimitPolicy
@@ -90,7 +90,7 @@ type ShardProcessor struct {
 func NewShardProcessor(
 	ctx context.Context,
 	poolName string,
-	shard contracts.RegistryShard,
+	registry contracts.FlowRegistry,
 	saturationDetector flowcontrol.SaturationDetector,
 	endpointCandidates contracts.EndpointCandidates,
 	usageLimitPolicy flowcontrol.UsageLimitPolicy,
@@ -100,7 +100,7 @@ func NewShardProcessor(
 	logger logr.Logger,
 ) *ShardProcessor {
 	return &ShardProcessor{
-		shard:                shard,
+		registry:             registry,
 		poolName:             poolName,
 		saturationDetector:   saturationDetector,
 		endpointCandidates:   endpointCandidates,
@@ -243,7 +243,7 @@ func (sp *ShardProcessor) enqueue(item *FlowItem) {
 	}
 
 	// --- Configuration Validation ---
-	managedQ, err := sp.shard.ManagedQueue(key)
+	managedQ, err := sp.registry.ManagedQueue(key)
 	if err != nil {
 		finalErr := fmt.Errorf("configuration error: failed to get queue for flow key %s: %w", key, err)
 		sp.logger.Error(finalErr, "Rejecting item.", "flowKey", key, "reqID", req.ID())
@@ -251,7 +251,7 @@ func (sp *ShardProcessor) enqueue(item *FlowItem) {
 		return
 	}
 
-	_, err = sp.shard.PriorityBandAccessor(key.Priority)
+	_, err = sp.registry.PriorityBandAccessor(key.Priority)
 	if err != nil {
 		finalErr := fmt.Errorf("configuration error: failed to get priority band for priority %d: %w", key.Priority, err)
 		sp.logger.Error(finalErr, "Rejecting item.", "flowKey", key, "reqID", req.ID())
@@ -286,7 +286,7 @@ func (sp *ShardProcessor) enqueue(item *FlowItem) {
 // This check reflects actual resource utilization, including "zombie" items (finalized but unswept), to prevent
 // physical resource overcommitment.
 func (sp *ShardProcessor) hasCapacity(priority int, itemByteSize uint64) bool {
-	stats := sp.shard.Stats()
+	stats := sp.registry.Stats()
 	if stats.TotalCapacityBytes > 0 && stats.TotalByteSize+itemByteSize > stats.TotalCapacityBytes {
 		return false
 	}
@@ -331,7 +331,7 @@ func (sp *ShardProcessor) dispatchCycle(ctx context.Context) bool {
 	// Record pool saturation metric
 	metrics.RecordFlowControlPoolSaturation(sp.poolName, saturation)
 
-	priorities := sp.shard.AllOrderedPriorityLevels()
+	priorities := sp.registry.AllOrderedPriorityLevels()
 	ceilings := sp.usageLimitPolicy.ComputeLimit(ctx, saturation, priorities)
 
 	for i, priority := range priorities {
@@ -346,7 +346,7 @@ func (sp *ShardProcessor) dispatchCycle(ctx context.Context) bool {
 			return false
 		}
 
-		originalBand, err := sp.shard.PriorityBandAccessor(priority)
+		originalBand, err := sp.registry.PriorityBandAccessor(priority)
 		if err != nil {
 			sp.logger.Error(err, "Failed to get PriorityBandAccessor, skipping band", "priority", priority)
 			continue
@@ -379,7 +379,7 @@ func (sp *ShardProcessor) selectItem(
 	ctx context.Context,
 	flowGroup flowcontrol.PriorityBandAccessor,
 ) (flowcontrol.QueueItemAccessor, error) {
-	fairnessP, err := sp.shard.FairnessPolicy(flowGroup.Priority())
+	fairnessP, err := sp.registry.FairnessPolicy(flowGroup.Priority())
 	if err != nil {
 		return nil, fmt.Errorf("could not get FairnessPolicy: %w", err)
 	}
@@ -388,7 +388,8 @@ func (sp *ShardProcessor) selectItem(
 		return nil, fmt.Errorf("FairnessPolicy %q failed to select queue: %w", fairnessP.TypedName(), err)
 	}
 	if queue == nil {
-		return nil, nil
+		// nothing to select
+		return nil, nil //nolint:nilnil
 	}
 	// The queue itself is responsible for explicit ordering via its configured OrderingPolicy.
 	// We simply peek at the head.
@@ -399,7 +400,7 @@ func (sp *ShardProcessor) selectItem(
 func (sp *ShardProcessor) dispatchItem(itemAcc flowcontrol.QueueItemAccessor) error {
 	req := itemAcc.OriginalRequest()
 	key := req.FlowKey()
-	managedQ, err := sp.shard.ManagedQueue(key)
+	managedQ, err := sp.registry.ManagedQueue(key)
 	if err != nil {
 		return fmt.Errorf("failed to get ManagedQueue for flow %s: %w", key, err)
 	}
@@ -517,8 +518,8 @@ func (sp *ShardProcessor) processAllQueuesConcurrently(
 	// Phase 1: Collect all queues to be processed into a single slice.
 	// This avoids holding locks on the shard while processing, and allows us to determine the optimal number of workers.
 	var queuesToProcess []flowcontrol.FlowQueueAccessor
-	for _, priority := range sp.shard.AllOrderedPriorityLevels() {
-		band, err := sp.shard.PriorityBandAccessor(priority)
+	for _, priority := range sp.registry.AllOrderedPriorityLevels() {
+		band, err := sp.registry.PriorityBandAccessor(priority)
 		if err != nil {
 			logger.Error(err, "Failed to get PriorityBandAccessor", "priority", priority)
 			continue
@@ -550,7 +551,7 @@ func (sp *ShardProcessor) processAllQueuesConcurrently(
 					"flowKey", key,
 					"flowID", key.ID,
 					"flowPriority", key.Priority)
-				managedQ, err := sp.shard.ManagedQueue(key)
+				managedQ, err := sp.registry.ManagedQueue(key)
 				if err != nil {
 					queueLogger.Error(err, "Failed to get ManagedQueue")
 					continue

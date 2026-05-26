@@ -23,8 +23,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	fwkplugin "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/plugin"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 )
 
 // NotificationExtractor implements both Extractor and NotificationExtractor for testing.
@@ -58,16 +58,11 @@ func (m *NotificationExtractor) WithExtractError(err error) *NotificationExtract
 }
 
 func (m *NotificationExtractor) TypedName() fwkplugin.TypedName {
-	return fwkplugin.TypedName{Type: "mock-extractor", Name: m.name}
+	return fwkplugin.TypedName{Type: m.name, Name: m.name}
 }
 
 func (m *NotificationExtractor) ExpectedInputType() reflect.Type {
 	return reflect.TypeFor[fwkdl.NotificationEvent]()
-}
-
-// Extract is the Extractor interface method — no-op for notification extractors.
-func (m *NotificationExtractor) Extract(_ context.Context, _ any, _ fwkdl.Endpoint) error {
-	return nil
 }
 
 func (m *NotificationExtractor) GVK() schema.GroupVersionKind {
@@ -82,7 +77,10 @@ func (m *NotificationExtractor) ExtractNotification(_ context.Context, event fwk
 	return m.extractErr
 }
 
-// GetEvents returns a copy of all recorded events.
+// GetEvents returns an immutable snapshot of all recorded events.
+// It is safe to call concurrently: the snapshot is copied under the internal
+// lock, so callers can iterate the returned slice without holding any lock and
+// without racing against concurrent ExtractNotification calls.
 func (m *NotificationExtractor) GetEvents() []fwkdl.NotificationEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -137,7 +135,7 @@ func (m *Extractor) WithMetricsUpdate(metrics *fwkdl.Metrics) *Extractor {
 }
 
 func (m *Extractor) TypedName() fwkplugin.TypedName {
-	return fwkplugin.TypedName{Type: "mock-extractor", Name: m.name}
+	return fwkplugin.TypedName{Type: m.name, Name: m.name}
 }
 
 func (m *Extractor) ExpectedInputType() reflect.Type {

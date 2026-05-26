@@ -33,9 +33,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stretchr/testify/assert"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	metricextractor "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/extractor/metrics"
-	sourcemetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/source/metrics"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	extractormetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/extractor/metrics"
+	sourcemetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/metrics"
 )
 
 // vLLM metric names based on Model Server Protocol
@@ -101,8 +102,8 @@ func TestMetricsParityStandard(t *testing.T) {
 			defer srv.Close()
 
 			ctx := context.Background()
-			pmMetrics, pmErr := parseWithBackendPodMetrics(t, ctx, srv.URL)
-			dlMetrics, dlErr := parseWithDatalayerMetrics(t, ctx, srv.URL)
+			pmMetrics, pmErr := parseWithBackendPodMetrics(ctx, t, srv.URL)
+			dlMetrics, dlErr := parseWithDatalayerMetrics(ctx, t, srv.URL)
 
 			assert.Equal(t, pmErr != nil, dlErr != nil,
 				"Error mismatch!\nPodMetrics err: %v\nDatalayer err: %v", pmErr, dlErr)
@@ -179,8 +180,8 @@ func TestMetricsParityMultiLoRA(t *testing.T) {
 			defer srv.Close()
 
 			ctx := context.Background()
-			pmMetrics, pmErr := parseWithBackendPodMetrics(t, ctx, srv.URL)
-			dlMetrics, dlErr := parseWithDatalayerMetrics(t, ctx, srv.URL)
+			pmMetrics, pmErr := parseWithBackendPodMetrics(ctx, t, srv.URL)
+			dlMetrics, dlErr := parseWithDatalayerMetrics(ctx, t, srv.URL)
 
 			assert.Equal(t, pmErr != nil, dlErr != nil,
 				"Error mismatch!\nPodMetrics err: %v\nDatalayer err: %v", pmErr, dlErr)
@@ -200,8 +201,8 @@ func TestMetricsParityTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	pmMetrics, pmErr := parseWithBackendPodMetrics(t, ctx, srv.URL)
-	dlMetrics, dlErr := parseWithDatalayerMetrics(t, ctx, srv.URL)
+	pmMetrics, pmErr := parseWithBackendPodMetrics(ctx, t, srv.URL)
+	dlMetrics, dlErr := parseWithDatalayerMetrics(ctx, t, srv.URL)
 
 	// Both should timeout and error
 	assert.Error(t, pmErr, "PodMetrics should have timed out")
@@ -246,8 +247,8 @@ func TestMetricsParityMalformed(t *testing.T) {
 			defer srv.Close()
 
 			ctx := context.Background()
-			pmMetrics, pmErr := parseWithBackendPodMetrics(t, ctx, srv.URL)
-			dlMetrics, dlErr := parseWithDatalayerMetrics(t, ctx, srv.URL)
+			pmMetrics, pmErr := parseWithBackendPodMetrics(ctx, t, srv.URL)
+			dlMetrics, dlErr := parseWithDatalayerMetrics(ctx, t, srv.URL)
 
 			// Both should handle errors similarly
 			if (pmErr != nil) != (dlErr != nil) {
@@ -273,7 +274,7 @@ type MetricMock struct {
 }
 
 // parseWithBackendPodMetrics uses the backend.PodMetrics implementation
-func parseWithBackendPodMetrics(t *testing.T, ctx context.Context, urlStr string) (*fwkdl.Metrics, error) {
+func parseWithBackendPodMetrics(ctx context.Context, t *testing.T, urlStr string) (*fwkdl.Metrics, error) {
 	t.Helper()
 
 	mapping, err := NewMetricMapping(
@@ -308,7 +309,7 @@ func parseWithBackendPodMetrics(t *testing.T, ctx context.Context, urlStr string
 }
 
 // parseWithDatalayerMetrics uses the datalayer source + extractor implementation
-func parseWithDatalayerMetrics(t *testing.T, ctx context.Context, urlStr string) (*fwkdl.Metrics, error) {
+func parseWithDatalayerMetrics(ctx context.Context, t *testing.T, urlStr string) (*fwkdl.Metrics, error) {
 	t.Helper()
 
 	parsedURL, err := url.Parse(urlStr)
@@ -325,7 +326,7 @@ func parseWithDatalayerMetrics(t *testing.T, ctx context.Context, urlStr string)
 		return nil, fmt.Errorf("failed to marshal datasource parameters: %w", err)
 	}
 
-	mapping, err := metricextractor.NewMapping(
+	mapping, err := extractormetrics.NewMapping(
 		WaitingMetric,
 		RunningMetric,
 		KVCacheMetric,
@@ -336,20 +337,20 @@ func parseWithDatalayerMetrics(t *testing.T, ctx context.Context, urlStr string)
 		return nil, fmt.Errorf("failed to create mapping: %w", err)
 	}
 
-	registry := metricextractor.NewMappingRegistry()
-	if err := registry.Register(metricextractor.DefaultEngineType, mapping); err != nil {
+	registry := extractormetrics.NewMappingRegistry()
+	if err := registry.Register(extractormetrics.DefaultEngineType, mapping); err != nil {
 		return nil, fmt.Errorf("failed to register mapping: %w", err)
 	}
 
-	extractor, err := metricextractor.NewCoreMetricsExtractor(registry, metricextractor.DefaultEngineTypeLabelKey)
+	extractor, err := extractormetrics.NewCoreMetricsExtractor(registry, extractormetrics.DefaultEngineTypeLabelKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create extractor: %w", err)
 	}
 
 	plugin, err := sourcemetrics.MetricsDataSourceFactory(
 		"test-metrics-source",
-		params, // configure scheme and path via parameters
-		nil,    // no plugin handle needed for test
+		fwkplugin.StrictDecoder(params), // configure scheme and path via parameters
+		nil,                             // no plugin handle needed for test
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create data source: %w", err)
@@ -363,7 +364,7 @@ func parseWithDatalayerMetrics(t *testing.T, ctx context.Context, urlStr string)
 	metadata := &fwkdl.EndpointMetadata{
 		MetricsHost: parsedURL.Host,
 		Labels: map[string]string{
-			metricextractor.DefaultEngineTypeLabelKey: metricextractor.DefaultEngineType,
+			extractormetrics.DefaultEngineTypeLabelKey: extractormetrics.DefaultEngineType,
 		},
 	}
 	endpoint := fwkdl.NewEndpoint(metadata, fwkdl.NewMetrics())

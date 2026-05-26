@@ -6,22 +6,24 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	attrmodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/models"
 )
 
 func TestExtractorExtract(t *testing.T) {
 	ctx := context.Background()
 
-	extractor, err := NewModelExtractor()
+	extPlugin, err := ModelServerExtractorFactory("test-extractor", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create extractor: %v", err)
 	}
+	extractor := extPlugin.(fwkdl.Extractor)
 
-	if exType := extractor.TypedName().Type; exType == "" {
+	if exType := extPlugin.TypedName().Type; exType == "" {
 		t.Error("empty extractor type")
 	}
 
-	if exName := extractor.TypedName().Name; exName == "" {
+	if exName := extPlugin.TypedName().Name; exName == "" {
 		t.Error("empty extractor name")
 	}
 
@@ -58,7 +60,7 @@ func TestExtractorExtract(t *testing.T) {
 			name: "valid models response",
 			data: &ModelResponse{
 				Object: "list",
-				Data: []ModelInfo{
+				Data: []attrmodels.ModelData{
 					{
 						ID: model,
 					},
@@ -73,6 +75,7 @@ func TestExtractorExtract(t *testing.T) {
 		},
 	}
 
+	key := attrmodels.ModelsAttributeKey.WithNonEmptyProducerName(attrmodels.ModelsExtractorType).String()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			defer func() {
@@ -82,12 +85,12 @@ func TestExtractorExtract(t *testing.T) {
 			}()
 
 			attr := ep.GetAttributes()
-			before, ok := attr.Get(modelsAttributeKey)
+			before, ok := attr.Get(key)
 			if ok && before != nil {
 				t.Error("expected empty attributes")
 			}
 			err := extractor.Extract(ctx, tt.data, ep)
-			after, ok := attr.Get(modelsAttributeKey)
+			after, ok := attr.Get(key)
 			if !ok && tt.updated {
 				t.Error("expected updated attributes")
 			}

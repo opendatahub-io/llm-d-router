@@ -28,6 +28,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/pflag"
 	"google.golang.org/grpc"
 	healthPb "google.golang.org/grpc/health/grpc_health_v1"
@@ -38,71 +39,93 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	configapi "github.com/llm-d/llm-d-inference-scheduler/apix/config/v1alpha1"
-	"github.com/llm-d/llm-d-inference-scheduler/internal/runnable"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/common"
-	logutil "github.com/llm-d/llm-d-inference-scheduler/pkg/common/observability/logging"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/common/observability/profiling"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/common/observability/tracing"
-	backendmetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/backend/metrics"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/config"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/config/loader"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/datalayer"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/datastore"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/contracts"
-	fccontroller "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/controller"
-	fcregistry "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/flowcontrol/registry"
-	fwkplugin "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/plugin"
-	fwkrh "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/requesthandling"
-	attrconcurrency "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/attribute/concurrency"
-	attrlatency "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/attribute/latency"
-	attrprefix "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/attribute/prefix"
-	extractormetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/extractor/metrics"
-	sourcemetrics "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/source/metrics"
-	sourcenotifications "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/datalayer/source/notifications"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/fairness/globalstrict"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/fairness/roundrobin"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/ordering/edf"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/ordering/fcfs"
-	slodeadline "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/ordering/slodeadline"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/saturationdetector/concurrency"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/saturationdetector/utilization"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/flowcontrol/usagelimits"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/admitter/latencyslo"
-	reqdataprodprefix "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/dataproducer/inflightload"
-	latencyproducer "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/requestattributereporter"
-	testresponsereceived "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requestcontrol/test/responsereceived"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requesthandling/parsers/openai"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requesthandling/parsers/passthrough"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/requesthandling/parsers/vllmgrpc"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/filter/prefixcacheaffinity"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/filter/sloheadroomtier"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/picker/maxscore"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/picker/random"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/picker/weightedrandom"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/profile"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/kvcacheutilization"
-	latencyscorer "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/latency"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/loraaffinity"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/prefix"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/queuedepth"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/runningrequests"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/scorer/tokenload"
-	testfilter "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/plugins/scheduling/test/filter"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/handlers"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/metrics"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/metrics/collectors"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/requestcontrol"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/scheduling"
-	runserver "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/server"
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/epp/util/env"
-	"github.com/llm-d/llm-d-inference-scheduler/version"
+	configapi "github.com/llm-d/llm-d-router/apix/config/v1alpha1"
+	"github.com/llm-d/llm-d-router/internal/runnable"
+	"github.com/llm-d/llm-d-router/pkg/common"
+	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/profiling"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
+	backendmetrics "github.com/llm-d/llm-d-router/pkg/epp/backend/metrics"
+	"github.com/llm-d/llm-d-router/pkg/epp/config"
+	"github.com/llm-d/llm-d-router/pkg/epp/config/loader"
+	"github.com/llm-d/llm-d-router/pkg/epp/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/datastore"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol"
+	"github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/contracts"
+	fccontroller "github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/controller"
+	fcregistry "github.com/llm-d/llm-d-router/pkg/epp/flowcontrol/registry"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
+	attrconcurrency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/concurrency"
+	attrlatency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/latency"
+	attrmodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/models"
+	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
+	discoveryfile "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/discovery/file"
+	extractormetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/extractor/metrics"
+	extmodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/extractor/models"
+	sourcemetrics "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/metrics"
+	srcmodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/models"
+	sourcenotifications "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/source/notifications"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/globalstrict"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/roundrobin"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/edf"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/fcfs"
+	slodeadline "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/slodeadline"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/saturationdetector/concurrency"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/saturationdetector/utilization"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/usagelimits"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/latencyslo"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/probabilisticadmitter"
+	reqdataprodprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/inflightload"
+	mmproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/multimodal"
+	preciseproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache"
+	latencyproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/preadmitter/agentidentity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/requestattributereporter"
+	testresponsereceived "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/test/responsereceived"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/openai"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/passthrough"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vertexai"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vllmgrpc"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/bylabel"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/prefixcacheaffinity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/sloheadroomtier"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/maxscore"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/random"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/picker/weightedrandom"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/dataparallel"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/disagg"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/profilehandler/single"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/activerequest"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/contextlengthaware"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/kvcacheutilization"
+	latencyscorer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/latency"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/loadaware"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/loraaffinity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/mmcacheaffinity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/nohitlru"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/preciseprefixcache"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/prefix"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/queuedepth"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/runningrequests"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/sessionaffinity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/tokenload"
+	testfilter "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/test/filter"
+	"github.com/llm-d/llm-d-router/pkg/epp/handlers"
+	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
+	"github.com/llm-d/llm-d-router/pkg/epp/metrics/collectors"
+	"github.com/llm-d/llm-d-router/pkg/epp/requestcontrol"
+	"github.com/llm-d/llm-d-router/pkg/epp/scheduling"
+	runserver "github.com/llm-d/llm-d-router/pkg/epp/server"
+	"github.com/llm-d/llm-d-router/pkg/epp/util/env"
+	"github.com/llm-d/llm-d-router/version"
 )
 
 const (
@@ -134,6 +157,9 @@ type Runner struct {
 	customCollectors     []prometheus.Collector
 	parser               fwkrh.Parser
 	dlRuntime            *datalayer.Runtime
+	PluginHandle         fwkplugin.Handle
+	// rawConfig caches the result of parseConfigurationPhaseOne.
+	rawConfig *configapi.EndpointPickerConfig
 }
 
 // WithExecutableName sets the name of the executable containing the runner.
@@ -176,20 +202,33 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Print all flag values
+	// Print flag values, skipping deprecated metric flags configured via engineConfigs
 	flags := make(map[string]any)
 	pflag.VisitAll(func(f *pflag.Flag) {
-		flags[f.Name] = f.Value
+		if !runserver.IsDeprecatedMetricFlag(f.Name) {
+			flags[f.Name] = f.Value
+		}
 	})
 	setupLog.Info("Flags processed", "flags", flags)
 
 	logutil.InitLogging(&opts.ZapOptions)
 
 	if opts.Tracing {
-		err := tracing.InitTracing(ctx, setupLog, "gateway-api-inference-extension/epp")
+		err := tracing.InitTracing(ctx, setupLog, "llm-d-router/epp")
 		if err != nil {
 			return fmt.Errorf("failed to init tracing %w", err)
 		}
+	}
+
+	// If the config specifies a discovery plugin, take the file discovery path which
+	// does not require a Kubernetes cluster. Otherwise fall through to the K8s path.
+	rawConfig, err := r.parseConfigurationPhaseOne(ctx, opts)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse configuration")
+		return err
+	}
+	if rawConfig.DataLayer != nil && rawConfig.DataLayer.Discovery != nil {
+		return r.runWithFileDiscovery(ctx, opts, rawConfig)
 	}
 
 	// --- Get Kubernetes Config ---
@@ -242,6 +281,8 @@ func (r *Runner) setup(ctx context.Context, cfg *rest.Config, opts *runserver.Op
 		setupLog.Error(err, "Failed to parse configuration")
 		return nil, nil, err
 	}
+	setupLog.Info("Raw config after phase one", "config", rawConfig)
+
 	useNewMetrics := !r.featureGates[datalayer.EnableLegacyMetricsFeatureGate]
 	epf := r.setupMetricsCollection(useNewMetrics, opts, pmc)
 	gknn, err := extractGKNN(opts.PoolName, opts.PoolGroup, opts.PoolNamespace, opts.EndpointSelector)
@@ -268,6 +309,7 @@ func (r *Runner) setup(ctx context.Context, cfg *rest.Config, opts *runserver.Op
 		setupLog.Error(err, "Failed to parse configuration")
 		return nil, nil, err
 	}
+	setupLog.Info("EPP config after phase two", "config", eppConfig)
 
 	// --- Setup Metrics Server ---
 	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
@@ -343,10 +385,7 @@ func (r *Runner) setup(ctx context.Context, cfg *rest.Config, opts *runserver.Op
 	if r.featureGates[flowcontrol.FeatureGate] {
 		endpointCandidates = requestcontrol.NewCachedEndpointCandidates(ctx, endpointCandidates, time.Millisecond*50)
 		setupLog.Info("Initializing experimental Flow Control layer")
-		registry, err := fcregistry.NewFlowRegistry(eppConfig.FlowControlConfig.Registry, setupLog)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Flow Registry: %w", err)
-		}
+		registry := fcregistry.NewFlowRegistry(eppConfig.FlowControlConfig.Registry, setupLog)
 		fc, err := fccontroller.NewFlowController(
 			ctx,
 			opts.PoolName,
@@ -385,6 +424,8 @@ func (r *Runner) setup(ctx context.Context, cfg *rest.Config, opts *runserver.Op
 		Parser:                           r.parser,
 		SaturationDetector:               eppConfig.SaturationDetector,
 		UseExperimentalDatalayerV2:       r.featureGates[datalayer.ExperimentalDatalayerFeatureGate] || !r.featureGates[datalayer.EnableLegacyMetricsFeatureGate],
+		GRPCMaxRecvMsgSize:               opts.GRPCMaxRecvMsgSize,
+		GRPCMaxSendMsgSize:               opts.GRPCMaxSendMsgSize,
 	}
 
 	if err := serverRunner.SetupWithManager(mgr); err != nil {
@@ -445,28 +486,60 @@ func setupDatastore(ctx context.Context, epFactory datalayer.EndpointFactory, mo
 
 	if startCrdReconcilers {
 		return datastore.NewDatastore(ctx, epFactory, modelServerMetricsPort), nil
-	} else {
-		endpointPool, err := NewEndpointPoolFromOptions(namespace, name, endpointSelector, endpointTargetPorts)
-		if err != nil {
-			setupLog.Error(err, "Failed to construct endpoint pool from options")
-			return nil, err
-		}
-		return datastore.NewDatastore(ctx, epFactory, modelServerMetricsPort).WithEndpointPool(endpointPool), nil
 	}
+	endpointPool, err := NewEndpointPoolFromOptions(namespace, name, endpointSelector, endpointTargetPorts)
+	if err != nil {
+		setupLog.Error(err, "Failed to construct endpoint pool from options")
+		return nil, err
+	}
+	return datastore.NewDatastore(ctx, epFactory, modelServerMetricsPort).WithEndpointPool(endpointPool), nil
 }
 
 // registerInTreePlugins registers the factory functions of all known plugins
 func (r *Runner) registerInTreePlugins() {
+	// bylabel role filters
+	fwkplugin.Register(bylabel.LabelSelectorFilterType, bylabel.SelectorFactory)
+	fwkplugin.Register(bylabel.ByLabelSelectorType, bylabel.DeprecatedSelectorFactory) //nolint:staticcheck
+	fwkplugin.Register(bylabel.ByLabelType, bylabel.Factory)                           //nolint:staticcheck
+	fwkplugin.Register(bylabel.EncodeRoleType, bylabel.EncodeRoleFactory)
+	fwkplugin.Register(bylabel.DecodeRoleType, bylabel.DecodeRoleFactory)
+	fwkplugin.Register(bylabel.PrefillRoleType, bylabel.PrefillRoleFactory)
+
+	// dataparallel profile handler
+	fwkplugin.Register(dataparallel.DataParallelProfileHandlerType, dataparallel.ProfileHandlerFactory)
+
+	// extra scheduling scorers
+	fwkplugin.Register(loadaware.LoadAwareType, loadaware.Factory)
+	fwkplugin.Register(sessionaffinity.SessionAffinityType, sessionaffinity.Factory)
+	fwkplugin.Register(contextlengthaware.ContextLengthAwareType, contextlengthaware.Factory)
+
+	// data layer models source/extractor
+	fwkplugin.Register(srcmodels.ModelsDataSourceType, srcmodels.ModelDataSourceFactory)
+	fwkplugin.Register(attrmodels.ModelsExtractorType, extmodels.ModelServerExtractorFactory)
+
 	fwkplugin.Register(prefix.PrefixCacheScorerPluginType, prefix.PrefixCachePluginFactory)
 	fwkplugin.Register(maxscore.MaxScorePickerType, maxscore.MaxScorePickerFactory)
 	fwkplugin.Register(random.RandomPickerType, random.RandomPickerFactory)
 	fwkplugin.Register(weightedrandom.WeightedRandomPickerType, weightedrandom.WeightedRandomPickerFactory)
-	fwkplugin.Register(profile.SingleProfileHandlerType, profile.SingleProfileHandlerFactory)
+	fwkplugin.Register(single.SingleProfileHandlerType, single.SingleProfileHandlerFactory)
+	fwkplugin.Register(disagg.DisaggHeadersHandlerType, disagg.HeadersHandlerFactory) //nolint:staticcheck // intentional: keep backward compatibility
+	fwkplugin.Register(disagg.PrefillHeaderHandlerType, disagg.HeadersHandlerFactory) //nolint:staticcheck // intentional: keep backward compatibility
+	fwkplugin.Register(disagg.PdProfileHandlerType, disagg.PdProfileHandlerFactory)   //nolint:staticcheck // intentional: keep backward compatibility
+	fwkplugin.Register(disagg.DisaggProfileHandlerType, disagg.HandlerFactory)
+	fwkplugin.Register(disagg.AlwaysDisaggPDDeciderPluginType, disagg.AlwaysDisaggPDDeciderPluginFactory)
+	fwkplugin.Register(disagg.PrefixBasedPDDeciderPluginType, disagg.PrefixBasedPDDeciderPluginFactory)
+	fwkplugin.Register(disagg.AlwaysDisaggMulimodalPluginType, disagg.AlwaysDisaggMulimodalDeciderPluginFactory)
 	fwkplugin.Register(kvcacheutilization.KvCacheUtilizationScorerType, kvcacheutilization.KvCacheUtilizationScorerFactory)
 	fwkplugin.Register(queuedepth.QueueScorerType, queuedepth.QueueScorerFactory)
 	fwkplugin.Register(runningrequests.RunningRequestsSizeScorerType, runningrequests.RunningRequestsSizeScorerFactory)
 	fwkplugin.Register(loraaffinity.LoraAffinityScorerType, loraaffinity.LoraAffinityScorerFactory)
 	fwkplugin.Register(tokenload.TokenLoadScorerType, tokenload.TokenLoadScorerFactory)
+	fwkplugin.Register(nohitlru.NoHitLRUType, nohitlru.Factory)
+	fwkplugin.Register(activerequest.ActiveRequestType, activerequest.Factory)
+	fwkplugin.Register(preciseprefixcache.PrecisePrefixCachePluginType, preciseprefixcache.PluginFactory)
+	fwkplugin.Register(mmcacheaffinity.Type, mmcacheaffinity.Factory)
+	fwkplugin.Register(preciseproducer.PluginType, preciseproducer.PluginFactory)
+
 	// Flow Control plugins
 	fwkplugin.Register(globalstrict.GlobalStrictFairnessPolicyType, globalstrict.GlobalStrictFairnessPolicyFactory)
 	fwkplugin.Register(roundrobin.RoundRobinFairnessPolicyType, roundrobin.RoundRobinFairnessPolicyFactory)
@@ -476,17 +549,23 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(usagelimits.StaticUsageLimitPolicyType, usagelimits.StaticPolicyFactory)
 
 	// Register Request level data producer plugins as defaults for their respective data keys.
-	fwkplugin.RegisterAsDefaultProducer(reqdataprodprefix.ApproxPrefixCachePluginType, reqdataprodprefix.ApproxPrefixCacheFactory, attrprefix.PrefixCacheMatchInfoKey)
-	fwkplugin.RegisterAsDefaultProducer(inflightload.InFlightLoadProducerType, inflightload.InFlightLoadProducerFactory, attrconcurrency.InFlightLoadKey)
-	fwkplugin.RegisterAsDefaultProducer(latencyproducer.LatencyDataProviderPluginType, latencyproducer.PredictedLatencyFactory, attrlatency.LatencyPredictionInfoKey)
+	fwkplugin.RegisterAsDefaultProducer(reqdataprodprefix.ApproxPrefixCachePluginType, reqdataprodprefix.ApproxPrefixCacheFactory, attrprefix.PrefixCacheMatchInfoDataKey)
+	fwkplugin.RegisterAsDefaultProducer(inflightload.InFlightLoadProducerType, inflightload.InFlightLoadProducerFactory, attrconcurrency.InFlightLoadDataKey)
+	fwkplugin.RegisterAsDefaultProducer(mmproducer.ProducerType, mmproducer.Factory, mmproducer.ProducedKey)
+	fwkplugin.RegisterAsDefaultProducer(latencyproducer.LatencyDataProviderPluginType, latencyproducer.PredictedLatencyFactory, attrlatency.LatencyPredictionInfoDataKey)
+	fwkplugin.Register(tokenizer.PluginType, tokenizer.PluginFactory)
+	fwkplugin.Register(tokenizer.LegacyPluginType, tokenizer.LegacyPluginFactory) //nolint:staticcheck // intentional: keep backward compatibility
 
 	// Latency predictor plugins
 	fwkplugin.Register(latencyslo.LatencyAdmissionPluginType, latencyslo.LatencyAdmissionFactory)
+	fwkplugin.Register(probabilisticadmitter.Type, probabilisticadmitter.Factory)
 
 	// Latency scoring and filtering plugins
 	fwkplugin.Register(prefixcacheaffinity.PluginType, prefixcacheaffinity.Factory)
 	fwkplugin.Register(sloheadroomtier.PluginType, sloheadroomtier.Factory)
 	fwkplugin.Register(latencyscorer.LatencyScorerType, latencyscorer.Factory)
+	fwkplugin.Register(bylabel.PrefillRoleType, bylabel.PrefillRoleFactory)
+	fwkplugin.Register(bylabel.DecodeRoleType, bylabel.DecodeRoleFactory)
 
 	// register filter for test purpose only (used in conformance tests)
 	fwkplugin.Register(testfilter.HeaderBasedTestingFilterType, testfilter.HeaderBasedTestingFilterFactory)
@@ -503,12 +582,26 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(openai.OpenAIParserType, openai.OpenAIParserPluginFactory)
 	fwkplugin.Register(vllmgrpc.VllmGRPCParserType, vllmgrpc.VllmGRPCParserPluginFactory)
 	fwkplugin.Register(passthrough.PassthroughParserType, passthrough.PassthroughParserPluginFactory)
+	fwkplugin.Register(vertexai.VertexAIParserType, vertexai.VertexAIParserPluginFactory)
 	// register saturation detector plugins
 	fwkplugin.Register(concurrency.ConcurrencyDetectorType, concurrency.ConcurrencyDetectorFactory)
 	fwkplugin.Register(utilization.UtilizationDetectorType, utilization.UtilizationDetectorFactory)
+	// register discovery plugins
+	fwkplugin.Register(discoveryfile.PluginType, discoveryfile.Factory)
+	// register pre-admission processor plugins
+	fwkplugin.Register(agentidentity.PluginType, agentidentity.PluginFactory)
 }
 
 func (r *Runner) parseConfigurationPhaseOne(ctx context.Context, opts *runserver.Options) (*configapi.EndpointPickerConfig, error) {
+	// parseConfigurationPhaseOne is idempotent: Run() calls it to decide
+	// between the K8s and file-discovery paths, and the K8s path's setup()
+	// then calls it a second time. Cache the parsed config so we don't
+	// re-read the file, re-register plugins/feature gates, or re-emit the
+	// data-layer setup logs.
+	if r.rawConfig != nil {
+		return r.rawConfig, nil
+	}
+
 	logger := log.FromContext(ctx)
 
 	var configBytes []byte
@@ -547,6 +640,7 @@ func (r *Runner) parseConfigurationPhaseOne(ctx context.Context, opts *runserver
 		setupLog.Info("Data layer: ENABLED (default)")
 	}
 
+	r.rawConfig = rawConfig
 	return rawConfig, nil
 }
 
@@ -568,7 +662,8 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	applyDeprecatedEnvFeatureGate(enableExperimentalFlowControlLayer, "Flow Control layer", flowcontrol.FeatureGate, rawConfig)
 
-	handle := fwkplugin.NewEppHandle(ctx, makePodListFunc(ds))
+	handle := fwkplugin.NewEppHandle(ctx, makePodListFunc(ds), fwkplugin.WithMetricsRecorder(ctrlmetrics.Registry))
+	r.PluginHandle = handle
 	cfg, err := loader.InstantiateAndConfigure(rawConfig, handle, logger)
 
 	if err != nil {
@@ -577,19 +672,23 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	r.schedulerConfig = cfg.SchedulerConfig
 
+	// Auto-create any DataProducer plugins that are needed by consumers already in
+	// the config but not yet satisfied by an existing producer.
+	if err := datalayer.CreateMissingDataProducers(ctx, fwkplugin.DefaultProducerRegistry, fwkplugin.Registry, handle); err != nil {
+		return nil, fmt.Errorf("failed to create missing data producers - %w", err)
+	}
+
 	// Add requestControl plugins
 	r.requestControlConfig.AddPlugins(handle.GetAllPlugins()...)
 
-	// Auto-create any DataProducer plugins that are needed by consumers already in
-	// the config but not yet satisfied by an existing producer.
-	dataProducers, err := datalayer.CreateMissingDataProducers(handle.GetAllPlugins(), fwkplugin.DefaultProducerRegistry, fwkplugin.Registry, handle)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create missing data producers - %w", err)
+	// Let plugins declare their datalayer source/extractor dependencies before Configure().
+	for _, p := range handle.GetAllPlugins() {
+		if registrant, ok := p.(fwkdl.Registrant); ok {
+			if err := registrant.RegisterDependencies(r.dlRuntime); err != nil {
+				return nil, fmt.Errorf("plugin %s RegisterDependencies: %w", p.TypedName(), err)
+			}
+		}
 	}
-	for _, p := range dataProducers {
-		handle.AddPlugin(p.TypedName().Name, p)
-	}
-	r.requestControlConfig.AddPlugins(dataProducers...)
 
 	// Sort data plugins in DAG order (topological sort). Also check DAG for cycles.
 	// This must run after auto-created producers are added so they are included in the ordering.
@@ -599,7 +698,7 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 	}
 
 	// The plugins will be executed in topologically sorted order to ensure that data is produced before it is consumed.
-	r.requestControlConfig.OrderPrepareDataPlugins(dag)
+	r.requestControlConfig.OrderDataProducerPlugins(dag)
 
 	r.parser = handlers.NewParser(cfg.ParserConfig)
 	logger.Info("loaded configuration from file/text successfully")
@@ -629,10 +728,7 @@ func (r *Runner) configureAndStartDatalayer(ctx context.Context, enableNewMetric
 		return err
 	}
 
-	if err := r.dlRuntime.Start(ctx, mgr); err != nil {
-		return err
-	}
-	return nil
+	return r.dlRuntime.Start(ctx, mgr)
 }
 
 func (r *Runner) setupMetricsCollection(enableNewMetrics bool, opts *runserver.Options, pmc backendmetrics.PodMetricsClient) datalayer.EndpointFactory {
@@ -728,4 +824,212 @@ func resolvePoolNamespace(poolNamespace string) string {
 		return nsEnv
 	}
 	return runserver.DefaultPoolNamespace
+}
+
+// resolveDiscovery returns the discovery plugin identified by
+// rawConfig.DataLayer.Discovery.PluginRef. The plugin is expected to have
+// already been instantiated and registered in r.PluginHandle by
+// parseConfigurationPhaseTwo; this function only looks it up and verifies its
+// type, so the loader-created instance (with its real Handle wired in) is the
+// one the runner drives.
+func (r *Runner) resolveDiscovery(rawConfig *configapi.EndpointPickerConfig) (fwkdl.EndpointDiscovery, error) {
+	ref := rawConfig.DataLayer.Discovery.PluginRef
+	p := r.PluginHandle.Plugin(ref)
+	if p == nil {
+		return nil, fmt.Errorf("discovery: no plugin found with name %q", ref)
+	}
+	disc, ok := p.(fwkdl.EndpointDiscovery)
+	if !ok {
+		return nil, fmt.Errorf("discovery: plugin %q does not implement EndpointDiscovery", ref)
+	}
+	return disc, nil
+}
+
+// runWithFileDiscovery handles the execution path when a discovery plugin is configured.
+// It builds the EPP server stack without a Kubernetes cluster or controller manager.
+func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Options, rawConfig *configapi.EndpointPickerConfig) error {
+	useNewMetrics := !r.featureGates[datalayer.EnableLegacyMetricsFeatureGate]
+
+	var pmc backendmetrics.PodMetricsClient
+	if !useNewMetrics {
+		var err error
+		pmc, err = backendmetrics.NewPodMetricsClientImpl(setupLog, backendmetrics.Config{
+			ModelServerMetricsScheme:        opts.ModelServerMetricsScheme,
+			ModelServerMetricsHTTPSInsecure: opts.ModelServerMetricsHTTPSInsecure,
+			ModelServerMetricsPath:          opts.ModelServerMetricsPath,
+			TotalQueuedRequestsMetric:       opts.TotalQueuedRequestsMetric,
+			TotalRunningRequestsMetric:      opts.TotalRunningRequestsMetric,
+			KVCacheUsagePercentageMetric:    opts.KVCacheUsagePercentageMetric,
+			LoRAInfoMetric:                  opts.LoRAInfoMetric,
+			CacheInfoMetric:                 opts.CacheInfoMetric,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	epf := r.setupMetricsCollection(useNewMetrics, opts, pmc)
+
+	namespace := resolvePoolNamespace(opts.PoolNamespace)
+	poolName := opts.PoolName
+	if poolName == "" {
+		poolName = "epp"
+	}
+	pool := datalayer.NewEndpointPool(namespace, poolName)
+	ds := datastore.NewDatastore(ctx, epf, int32(opts.ModelServerMetricsPort)).WithEndpointPool(pool)
+
+	// On bare metal / Slurm / Ray (or any deployment without the K8s Downward
+	// API), neither --pool-namespace nor the NAMESPACE env var is set, so the
+	// pool ends up labeled with the literal "default" -- a Kubernetes-flavored
+	// string that is meaningless outside K8s. Behavior is unaffected; only
+	// metrics labels and log fields look wrong. Warn so operators set
+	// --pool-namespace explicitly for their environment.
+	if opts.PoolNamespace == "" && os.Getenv("NAMESPACE") == "" {
+		setupLog.Info("file-discovery mode: pool namespace defaulted to "+
+			runserver.DefaultPoolNamespace+"; pass --pool-namespace to label "+
+			"metrics and logs for your environment",
+			"namespace", runserver.DefaultPoolNamespace)
+	}
+
+	// File mode runs without a controller manager, so several Kubernetes-only
+	// features are inactive: the InferenceModelRewrite and InferenceObjective
+	// reconcilers never start, and any "k8s-notification-source" plugin in the
+	// data layer config silently fails to bind (Runtime.Start, which wires
+	// notification sources into the manager, is intentionally skipped below).
+	// Surface this once at startup so operators porting a K8s config see why
+	// related behavior differs.
+	setupLog.Info("file-discovery mode: Kubernetes-only features are inactive " +
+		"(InferenceModelRewrite, InferenceObjective, and any " +
+		"k8s-notification-source data layer plugins); see docs/discovery.md")
+
+	eppConfig, err := r.parseConfigurationPhaseTwo(ctx, rawConfig, ds)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse configuration")
+		return err
+	}
+
+	disc, err := r.resolveDiscovery(rawConfig)
+	if err != nil {
+		setupLog.Error(err, "Failed to resolve discovery plugin")
+		return err
+	}
+
+	disallowedExtractorType := ""
+	if !useNewMetrics {
+		disallowedExtractorType = extractormetrics.MetricsExtractorType
+	}
+	if err := r.dlRuntime.Configure(eppConfig.DataConfig, useNewMetrics, disallowedExtractorType, setupLog); err != nil {
+		return fmt.Errorf("failed to configure datalayer: %w", err)
+	}
+
+	if r.schedulerConfig == nil {
+		return errors.New("scheduler config must be set either by config api or through code")
+	}
+	setupLog.Info("parsed config", "scheduler-config", r.schedulerConfig)
+
+	scheduler := scheduling.NewSchedulerWithConfig(r.schedulerConfig)
+	endpointCandidates := requestcontrol.NewDatastoreEndpointCandidates(ds,
+		requestcontrol.WithDisableEndpointSubsetFilter(opts.DisableEndpointSubsetFilter))
+	admissionController := requestcontrol.NewLegacyAdmissionController(eppConfig.SaturationDetector, endpointCandidates)
+	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig)
+
+	gknn := common.GKNN{
+		NamespacedName: types.NamespacedName{Name: poolName, Namespace: namespace},
+	}
+	serverRunner := &runserver.ExtProcServerRunner{
+		GrpcPort:                         opts.GRPCPort,
+		GKNN:                             gknn,
+		Datastore:                        ds,
+		ControllerCfg:                    runserver.NewControllerConfig(false),
+		SecureServing:                    opts.SecureServing,
+		HealthChecking:                   opts.HealthChecking,
+		CertPath:                         opts.CertPath,
+		EnableCertReload:                 opts.EnableCertReload,
+		RefreshPrometheusMetricsInterval: opts.RefreshPrometheusMetricsInterval,
+		MetricsStalenessThreshold:        opts.MetricsStalenessThreshold,
+		Director:                         director,
+		Parser:                           r.parser,
+		SaturationDetector:               eppConfig.SaturationDetector,
+		UseExperimentalDatalayerV2:       useNewMetrics,
+	}
+
+	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
+	metrics.Register(r.customCollectors...)
+	metrics.RecordInferenceExtensionInfo(version.CommitSHA, version.BuildRef)
+
+	setupLog.Info("EPP starting (file discovery mode)",
+		"grpcPort", opts.GRPCPort,
+		"pool", poolName,
+		"namespace", namespace,
+		"discoveryPlugin", disc.TypedName())
+
+	isLeader := &atomic.Bool{}
+	isLeader.Store(true)
+
+	healthSrv := grpc.NewServer()
+	healthPb.RegisterHealthServer(healthSrv, &healthServer{
+		logger:                ctrl.Log.WithName("health"),
+		datastore:             ds,
+		isLeader:              isLeader,
+		leaderElectionEnabled: false,
+		supporter:             r.parser,
+	})
+
+	g := newRunnableGroup()
+	g.Add("discovery", func(ctx context.Context) error {
+		return disc.Start(ctx, fwkdl.NewDiscoveryNotifier(ds))
+	})
+	// epp-server and health wait for the discovery plugin's initial sync before
+	// going live, so requests and probes never observe an empty datastore. See
+	// EndpointDiscovery.Ready contract.
+	g.Add("epp-server", func(ctx context.Context) error {
+		select {
+		case <-disc.Ready():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return serverRunner.AsRunnable(ctrl.Log.WithName("ext-proc")).Start(ctx)
+	})
+	g.Add("health", func(ctx context.Context) error {
+		select {
+		case <-disc.Ready():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return runnable.NoLeaderElection(runnable.GRPCServer("health", healthSrv, opts.GRPCHealthPort)).Start(ctx)
+	})
+	g.Add("metrics", func(ctx context.Context) error {
+		return serveMetrics(ctx, opts.MetricsPort, opts.EnablePprof)
+	})
+	return g.Run(ctx)
+}
+
+// metricsShutdownTimeout bounds graceful shutdown of the metrics server so a
+// scraper holding a connection at process exit cannot block termination.
+const metricsShutdownTimeout = 5 * time.Second
+
+// serveMetrics starts a standalone Prometheus metrics HTTP server.
+//
+// EPP metrics are registered with controller-runtime's registry (see
+// pkg/epp/metrics.Register), not the prometheus default registry. The handler
+// must serve ctrlmetrics.Registry directly; promhttp.Handler() would expose only
+// Go runtime/process metrics and silently omit every EPP metric.
+func serveMetrics(ctx context.Context, port int, enablePprof bool) error {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
+	if enablePprof {
+		for path, h := range profiling.PprofHandlers() {
+			mux.Handle(path, h)
+		}
+	}
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("metrics server: %w", err)
+	}
+	return nil
 }

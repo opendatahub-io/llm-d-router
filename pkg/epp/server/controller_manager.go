@@ -30,9 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	v1 "sigs.k8s.io/gateway-api-inference-extension/api/v1"
-	"sigs.k8s.io/gateway-api-inference-extension/apix/v1alpha2"
 
-	"github.com/llm-d/llm-d-inference-scheduler/pkg/common"
+	"github.com/llm-d/llm-d-router/apix/v1alpha2"
+	"github.com/llm-d/llm-d-router/pkg/common"
 )
 
 var scheme = runtime.NewScheme()
@@ -87,7 +87,7 @@ func NewDefaultManager(controllerCfg ControllerConfig, gknn common.GKNN, restCon
 		opt.LeaderElection = true
 		opt.LeaderElectionResourceLock = "leases"
 		// The lease name needs to be unique per EPP deployment.
-		opt.LeaderElectionID = fmt.Sprintf("epp-%s-%s.gateway-api-inference-extension.sigs.k8s.io", gknn.Namespace, gknn.Name)
+		opt.LeaderElectionID = fmt.Sprintf("epp-%s-%s.llm-d.ai", gknn.Namespace, gknn.Name)
 		opt.LeaderElectionNamespace = gknn.Namespace
 		opt.LeaderElectionReleaseOnCancel = true
 	}

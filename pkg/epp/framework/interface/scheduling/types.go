@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"reflect"
 
-	fwkdl "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/datalayer"
-	fwkrh "github.com/llm-d/llm-d-inference-scheduler/pkg/epp/framework/interface/requesthandling"
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 )
 
 const nilString = "<nil>"
@@ -42,8 +42,8 @@ type RequestObjectives struct {
 
 // InferenceRequest is a structured representation of the fields we parse out of the InferenceRequest body.
 type InferenceRequest struct {
-	// RequestId is the Envoy generated Id for the request being processed
-	RequestId string
+	// RequestID is the Envoy generated Id for the request being processed
+	RequestID string
 	// TargetModel is the final target model after traffic split.
 	TargetModel string
 	// Data contains the request-body fields that we parse out as user input.
@@ -52,6 +52,8 @@ type InferenceRequest struct {
 	Headers map[string]string
 	// Request Objective
 	Objectives RequestObjectives
+	// FairnessID is the identity used by the flow control system to group requests into fairness queues.
+	FairnessID string
 	// RequestSizeBytes is the size of the raw request body in bytes when available.
 	// Used for token estimation (e.g. inputTokens ≈ RequestSizeBytes/4) without parsing body or calling PlainText().
 	RequestSizeBytes int
@@ -65,7 +67,7 @@ func (r *InferenceRequest) String() string {
 	}
 
 	return fmt.Sprintf("RequestID: %s, TargetModel: %s, Body: %v, Headers: %v",
-		r.RequestId, r.TargetModel, r.Body, r.Headers)
+		r.RequestID, r.TargetModel, r.Body, r.Headers)
 }
 
 type Endpoint interface {
@@ -117,26 +119,26 @@ func NewEndpoint(meta *fwkdl.EndpointMetadata, metrics *fwkdl.Metrics, attr fwkd
 }
 
 func EndpointComparer(a, b Endpoint) bool {
-	a_ep := a.(*endpoint)
-	b_ep := b.(*endpoint)
+	aEp := a.(*endpoint)
+	bEp := b.(*endpoint)
 
-	if !reflect.DeepEqual(a_ep.EndpointMetadata, b_ep.EndpointMetadata) {
+	if !reflect.DeepEqual(aEp.EndpointMetadata, bEp.EndpointMetadata) {
 		return false
 	}
-	if !reflect.DeepEqual(a_ep.Metrics, b_ep.Metrics) {
+	if !reflect.DeepEqual(aEp.Metrics, bEp.Metrics) {
 		return false
 	}
 
 	// Compare keys and values in AttributeMap for both endpoints. DeepEqual is not used here because the order of keys may differ.
-	a_keys := a_ep.Keys()
-	b_keys := b_ep.Keys()
-	if len(a_keys) != len(b_keys) {
+	aKeys := aEp.Keys()
+	bKeys := bEp.Keys()
+	if len(aKeys) != len(bKeys) {
 		return false
 	}
 
-	for _, k := range a_keys {
-		v1, ok1 := a_ep.Get(k)
-		v2, ok2 := b_ep.Get(k)
+	for _, k := range aKeys {
+		v1, ok1 := aEp.Get(k)
+		v2, ok2 := bEp.Get(k)
 		if !ok1 || !ok2 || !reflect.DeepEqual(v1, v2) {
 			return false
 		}
