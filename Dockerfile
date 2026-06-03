@@ -1,5 +1,5 @@
 # Build Stage: using Go 1.24 image
-FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
+FROM registry.access.redhat.com/ubi9/go-toolset:1.26.3-1780490420 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 USER root 
