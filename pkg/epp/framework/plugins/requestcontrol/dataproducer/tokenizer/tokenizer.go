@@ -33,18 +33,12 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/kvcache/kvblock"
 	"github.com/llm-d/llm-d-router/pkg/kvcache/tokenization"
 	tokenizerTypes "github.com/llm-d/llm-d-router/pkg/kvcache/tokenization/types"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
-	mmobs "github.com/llm-d/llm-d-router/pkg/epp/framework/observability/multimodal"
-	rcplugins "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol"
 )
 
 type tokenizer interface {
@@ -83,17 +77,6 @@ const (
 	blockTypeToolUse          = "tool_use"
 	blockTypeToolResult       = "tool_result"
 )
-
-// Backend identifiers reported on the tokenize span.
-const (
-	backendUDS      = "uds"
-	backendVLLM     = "vllm"
-	backendEstimate = "estimate"
-)
-
-// resultSkippedNoTokens marks a tokenize span whose backend returned no tokens,
-// distinguishing it from a span missing attributes for any other reason.
-const resultSkippedNoTokens = "skipped_no_tokens"
 
 var TokenizedPromptDataKey = plugin.NewDataKey(tokenizedPromptKeyID, PluginType)
 
@@ -302,7 +285,6 @@ func LegacyPluginFactory(name string, rawParameters *json.Decoder, handle plugin
 // (the default when no backend is set).
 func NewPlugin(ctx context.Context, name string, config *tokenizerPluginConfig) (*Plugin, error) {
 	var backend tokenInputProducer
-	var backendName string
 	switch {
 	case config.TokenizerConfig.IsEnabled():
 		log.FromContext(ctx).Info(
@@ -314,7 +296,6 @@ func NewPlugin(ctx context.Context, name string, config *tokenizerPluginConfig) 
 			return nil, fmt.Errorf("failed to initialize UDS tokenizer for '%s' plugin - %w", PluginType, err)
 		}
 		backend = renderBackend{tk: uds}
-		backendName = backendUDS
 	case config.VLLM != nil || config.ModelName != "":
 		cfg := config.VLLM
 		if cfg == nil {
@@ -325,17 +306,14 @@ func NewPlugin(ctx context.Context, name string, config *tokenizerPluginConfig) 
 			return nil, fmt.Errorf("failed to initialize vLLM HTTP renderer for '%s' plugin - %w", PluginType, err)
 		}
 		backend = renderBackend{tk: renderer}
-		backendName = backendVLLM
 	default:
 		backend = estimateBackend{img: newImageEstimator(config.Estimate), vid: newVideoEstimator(config.Estimate)}
-		backendName = backendEstimate
 	}
 
 	p := &Plugin{
-		typedName:   plugin.TypedName{Type: PluginType, Name: name},
-		backend:     backend,
-		backendName: backendName,
-		dk:          TokenizedPromptDataKey.WithNonEmptyProducerName(name),
+		typedName: plugin.TypedName{Type: PluginType, Name: name},
+		backend:   backend,
+		dk:        TokenizedPromptDataKey.WithNonEmptyProducerName(name),
 	}
 	if w, ok := backend.(warmer); ok {
 		go w.warmup(ctx)
@@ -348,9 +326,7 @@ func NewPlugin(ctx context.Context, name string, config *tokenizerPluginConfig) 
 type Plugin struct {
 	typedName plugin.TypedName
 	backend   tokenInputProducer
-	// backendName identifies the configured backend on the tokenize span.
-	backendName string
-	dk          plugin.DataKey
+	dk        plugin.DataKey
 }
 
 // compile-time assertions.
@@ -382,9 +358,6 @@ func (p *Plugin) ProduceTimeout() time.Duration {
 // Produce derives the request's TokenizedRequest via the configured backend and
 // stores it on the body. Skips when one is already present; errors propagate to
 // the Director, which logs and continues.
-//
-// The tokenize span opens below the already-tokenized skip path, so it is
-// emitted only when the backend is actually invoked.
 func (p *Plugin) Produce(ctx context.Context, request *scheduling.InferenceRequest, _ []scheduling.Endpoint) error {
 	if request.Body == nil {
 		return errors.New("request body is nil")
@@ -399,46 +372,15 @@ func (p *Plugin) Produce(ctx context.Context, request *scheduling.InferenceReque
 	}
 
 	ctx = withMMMetadata(ctx, parseMMMetadataHeaders(request.Headers))
-
-	ctx, span := tracing.Tracer(rcplugins.TracerScope).Start(ctx, "tokenize",
-		trace.WithSpanKind(trace.SpanKindInternal),
-	)
-	defer span.End()
-	// On the default (tracing-disabled) path Start returns a non-recording span;
-	// skip attribute construction, which walks the request's multimodal features.
-	tracingActive := span.IsRecording()
-	if tracingActive {
-		attrs := []attribute.KeyValue{
-			attribute.String("llm_d.epp.token_producer.backend", p.backendName),
-		}
-		if request.TargetModel != "" {
-			attrs = append(attrs, attribute.String("gen_ai.request.model", request.TargetModel))
-		}
-		if request.RequestID != "" {
-			attrs = append(attrs, attribute.String("gen_ai.request.id", request.RequestID))
-		}
-		span.SetAttributes(attrs...)
-	}
-
 	tp, err := p.backend.produce(ctx, request.Body)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	if tp == nil || tp.TokenCount() == 0 {
-		if tracingActive {
-			span.SetAttributes(attribute.String("llm_d.epp.token_producer.result", resultSkippedNoTokens))
-		}
 		return nil
 	}
 	tp.CacheSalt = CacheSaltFromBody(request.Body)
 	request.Body.TokenizedRequest = tp
-
-	if tracingActive {
-		span.SetAttributes(append(mmobs.SpanAttributes(request),
-			attribute.Int("llm_d.epp.token_producer.token_count", tp.TokenCount()),
-		)...)
-	}
 	return nil
 }
 
