@@ -65,14 +65,27 @@ type warmer interface {
 
 // warmup primes the render path so the first request does not pay the cold-start
 // cost. It retries a text render until the backend responds, then issues a
-// best-effort multimodal render. It returns on success, on the attempt cap, or
-// on context cancellation.
+// best-effort multimodal render. It returns on success, on the attempt cap, on
+// an authentication rejection, or on context cancellation.
 func (b renderBackend) warmup(ctx context.Context) {
-	logger := log.FromContext(ctx).V(logutil.DEBUG)
+	logger := log.FromContext(ctx)
+	// The warmup credential, when set, authenticates the probe's render calls.
+	if b.warmupAuth != "" {
+		ctx = withAuthHeader(ctx, b.warmupAuth)
+	}
 	for i := 0; i < warmupAttempts; i++ {
-		if _, err := b.produce(ctx, warmupChat()); err == nil {
+		_, err := b.produce(ctx, warmupChat())
+		if err == nil {
 			_, _ = b.produce(ctx, warmupChat(warmupImage))
-			logger.Info("token-producer backend warmed up", "attempts", i+1)
+			logger.V(logutil.DEBUG).Info("token-producer backend warmed up", "attempts", i+1)
+			return
+		}
+		// An auth rejection will not clear on retry.
+		if isRenderAuthError(err) {
+			logger.V(logutil.DEFAULT).Info(
+				"token-producer backend requires authentication, skipping warmup; "+
+					"the first request pays the cold-start cost",
+				"err", err)
 			return
 		}
 		select {
@@ -81,7 +94,7 @@ func (b renderBackend) warmup(ctx context.Context) {
 			return
 		}
 	}
-	logger.Info("token-producer backend warmup did not complete")
+	logger.V(logutil.DEBUG).Info("token-producer backend warmup did not complete")
 }
 
 // warmupChat builds a single-message chat body carrying the given image URLs.
@@ -101,7 +114,8 @@ func warmupChat(imageURLs ...string) *fwkrh.InferenceRequestBody {
 // renderBackend produces real token IDs and owns protocol dispatch, including
 // the pre-tokenized (Generate) passthrough.
 type renderBackend struct {
-	tk tokenizer
+	tk         tokenizer
+	warmupAuth string
 }
 
 func (b renderBackend) produce(ctx context.Context, body *fwkrh.InferenceRequestBody) (*fwkrh.TokenizedRequest, error) {
