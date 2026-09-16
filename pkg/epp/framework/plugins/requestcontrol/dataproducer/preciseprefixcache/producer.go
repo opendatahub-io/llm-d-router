@@ -161,6 +161,19 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 	if config.TokenProcessorConfig == nil {
 		config.TokenProcessorConfig = kvblock.DefaultTokenProcessorConfig()
 	}
+	if config.KVEventsConfig == nil {
+		config.KVEventsConfig = kvevents.DefaultConfig()
+	}
+
+	var podSelector labels.Selector
+	if kc := config.KVEventsConfig; kc.DiscoverPods && kc.PodDiscoveryConfig != nil && kc.PodDiscoveryConfig.PodLabelSelector != "" {
+		sel, err := labels.Parse(kc.PodDiscoveryConfig.PodLabelSelector)
+		if err != nil {
+			return nil, fmt.Errorf("invalid kvEventsConfig.podDiscoveryConfig.podLabelSelector %q: %w",
+				kc.PodDiscoveryConfig.PodLabelSelector, err)
+		}
+		podSelector = sel
+	}
 
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(config.TokenProcessorConfig)
 	if err != nil {
@@ -177,7 +190,10 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV-events engine adapter: %w", err)
 	}
-	pool := kvevents.NewPool(config.KVEventsConfig, indexer.KVBlockIndex(), tokenProcessor, adapter)
+	pool, err := kvevents.NewPool(config.KVEventsConfig, indexer.KVBlockIndex(), tokenProcessor, adapter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV-events pool: %w", err)
+	}
 	pool.Start(ctx)
 
 	subscribersManager := kvevents.NewSubscriberManager(pool)
@@ -376,6 +392,7 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 		}
 		info := attrprefix.NewPrefixCacheMatchInfo(matchLen, totalBlocks, p.blockSizeTokens).
 			WithCachedBlockCount(match.MatchedBlocks).
+			WithConfirmedCachedBlockCount(match.ConfirmedBlocks).
 			WithCachedBlocksByTier(match.BlocksByTier)
 		if len(mmBlockIndices) > 0 {
 			info.WithMM(attrprefix.MMMatchInfo{MatchBlocks: countMMMatchedBlocks(mmBlockIndices, match.MatchedBlocks)})
@@ -410,6 +427,7 @@ func addPodMatch(a, b kvcache.PodMatch) kvcache.PodMatch {
 	}
 	a.WeightedScore += b.WeightedScore
 	a.MatchedBlocks += b.MatchedBlocks
+	a.ConfirmedBlocks += b.ConfirmedBlocks
 	for tier, count := range b.BlocksByTier {
 		a.BlocksByTier[tier] += count
 	}
