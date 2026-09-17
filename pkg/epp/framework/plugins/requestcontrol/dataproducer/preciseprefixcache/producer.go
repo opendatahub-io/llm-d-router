@@ -148,16 +148,6 @@ func PluginFactory(name string, rawParameters *json.Decoder, handle plugin.Handl
 // The kvcache indexer, KV-events pool, and any local ZMQ subscriber start
 // in background goroutines bound to ctx.
 func New(ctx context.Context, name string, config PluginConfig) (*Producer, error) {
-	var podSelector labels.Selector
-	if kc := config.KVEventsConfig; kc != nil && kc.DiscoverPods && kc.PodDiscoveryConfig != nil && kc.PodDiscoveryConfig.PodLabelSelector != "" {
-		sel, err := labels.Parse(kc.PodDiscoveryConfig.PodLabelSelector)
-		if err != nil {
-			return nil, fmt.Errorf("invalid kvEventsConfig.podDiscoveryConfig.podLabelSelector %q: %w",
-				kc.PodDiscoveryConfig.PodLabelSelector, err)
-		}
-		podSelector = sel
-	}
-
 	if config.TokenProcessorConfig == nil {
 		config.TokenProcessorConfig = kvblock.DefaultTokenProcessorConfig()
 	}
