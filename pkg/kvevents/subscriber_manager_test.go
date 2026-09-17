@@ -41,7 +41,8 @@ func TestSubscriberManager_EnsureSubscriber(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -78,7 +79,8 @@ func TestSubscriberManager_RemoveSubscriber(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -110,7 +112,8 @@ func TestSubscriberManager_MultipleSubscribers(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -158,7 +161,8 @@ func TestSubscriberManager_EndpointChange(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -195,7 +199,8 @@ func TestSubscriberManager_ConcurrentOperations(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -232,7 +237,8 @@ func TestSubscriberManager_Shutdown_ReleasesSocket(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -266,7 +272,8 @@ func TestSubscriberManager_Shutdown_HonorsContextCancellation(t *testing.T) {
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -282,7 +289,7 @@ func TestSubscriberManager_Shutdown_HonorsContextCancellation(t *testing.T) {
 	assert.Empty(t, identifiers)
 }
 
-func TestSubscriberManager_EndpointChange_WaitsForOldSubscriberExit(t *testing.T) {
+func TestSubscriberManager_EndpointChange_EventuallyReleasesOldSubscriberSocket(t *testing.T) {
 	ctx := context.Background()
 
 	indexConfig := kvblock.DefaultIndexConfig()
@@ -292,7 +299,8 @@ func TestSubscriberManager_EndpointChange_WaitsForOldSubscriberExit(t *testing.T
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -323,15 +331,18 @@ func TestSubscriberManager_EndpointChange_WaitsForOldSubscriberExit(t *testing.T
 		return false
 	}, 2*time.Second, 10*time.Millisecond)
 
-	// Replace subscriber with endpoint2. EnsureSubscriber must wait until the old
-	// subscriber has exited and closed its socket before returning.
 	err = sm.EnsureSubscriber(ctx, podID, "", endpoint2, "", "kv@", false)
 	require.NoError(t, err)
 
-	// addr1 should now be released and available to bind immediately.
-	newL, err := net.Listen("tcp", addr1)
-	require.NoError(t, err)
-	require.NoError(t, newL.Close())
+	// The retired subscriber releases its socket asynchronously.
+	require.Eventually(t, func() bool {
+		newL, err := net.Listen("tcp", addr1)
+		if err != nil {
+			return false
+		}
+		_ = newL.Close()
+		return true
+	}, 2*time.Second, 10*time.Millisecond)
 
 	sm.Shutdown(ctx)
 }
@@ -346,7 +357,8 @@ func TestSubscriberManager_EndpointChange_HonorsContextCancellation(t *testing.T
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
@@ -377,7 +389,8 @@ func TestSubscriberManager_EndpointChange_BothChannelsReady_HonorsContextCancell
 	poolConfig := kvevents.DefaultConfig()
 	tokenProcessor, err := kvblock.NewChunkedTokenDatabase(kvblock.DefaultTokenProcessorConfig())
 	require.NoError(t, err)
-	pool := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	pool, err := kvevents.NewPool(poolConfig, index, tokenProcessor, engineadapter.NewVLLMAdapter())
+	require.NoError(t, err)
 
 	sm := kvevents.NewSubscriberManager(pool)
 
