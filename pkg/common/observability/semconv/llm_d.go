@@ -37,6 +37,14 @@ const (
 	LLMDEPPPickerTopEndpointsKey        = attribute.Key("llm_d.epp.picker.top_endpoints")
 	LLMDEPPPickerTopScoresKey           = attribute.Key("llm_d.epp.picker.top_scores")
 
+	// EPP Fairness attribution attributes
+	// LLMDEPPFairnessIDKey is the resolved fairness identity.
+	// Always paired with LLMDEPPFairnessSourceKey.
+	LLMDEPPFairnessIDKey = attribute.Key("llm_d.epp.fairness.id")
+	// LLMDEPPFairnessSourceKey is the branch that resolved the fairness identity.
+	// "header" is never evidence that the producer was authenticated.
+	LLMDEPPFairnessSourceKey = attribute.Key("llm_d.epp.fairness.source")
+
 	// EPP Scorer attributes
 	LLMDEPPScorerTypeKey               = attribute.Key("llm_d.epp.scorer.type")
 	LLMDEPPScorerNameKey               = attribute.Key("llm_d.epp.scorer.name")
@@ -119,6 +127,7 @@ const (
 	LLMDPDProxyRequestPathKey                 = attribute.Key("llm_d.pd_proxy.request_path")
 	LLMDPDProxyPrefillTargetKey               = attribute.Key("llm_d.pd_proxy.prefill_target")
 	LLMDPDProxyPrefillCandidatesKey           = attribute.Key("llm_d.pd_proxy.prefill_candidates")
+	LLMDPDProxyBootstrapRoomKey               = attribute.Key("llm_d.pd_proxy.bootstrap_room")
 	LLMDPDProxyDecodeTargetKey                = attribute.Key("llm_d.pd_proxy.decode.target")
 	LLMDPDProxyReasonKey                      = attribute.Key("llm_d.pd_proxy.reason")
 	LLMDPDProxyErrorKey                       = attribute.Key("llm_d.pd_proxy.error")
@@ -160,6 +169,18 @@ const (
 )
 
 // Typed helper functions for llm-d internal attributes.
+
+// EPP Fairness attribution helpers
+
+// LLMDEPPFairnessID returns an attribute for the resolved fairness identity.
+func LLMDEPPFairnessID(id string) attribute.KeyValue {
+	return LLMDEPPFairnessIDKey.String(id)
+}
+
+// LLMDEPPFairnessSource returns an attribute for how the fairness identity was resolved.
+func LLMDEPPFairnessSource(source string) attribute.KeyValue {
+	return LLMDEPPFairnessSourceKey.String(source)
+}
 
 // EPP Scheduling helpers
 
@@ -582,6 +603,11 @@ func LLMDPDProxyPrefillTarget(target string) attribute.KeyValue {
 // LLMDPDProxyPrefillCandidates returns an attribute for PD proxy prefill candidate count.
 func LLMDPDProxyPrefillCandidates(candidates int) attribute.KeyValue {
 	return LLMDPDProxyPrefillCandidatesKey.Int(candidates)
+}
+
+// LLMDPDProxyBootstrapRoom returns an attribute for the SGLang P/D bootstrap room ID.
+func LLMDPDProxyBootstrapRoom(room int64) attribute.KeyValue {
+	return LLMDPDProxyBootstrapRoomKey.Int64(room)
 }
 
 // LLMDPDProxyDecodeTarget returns an attribute for PD proxy decode target host/port.
