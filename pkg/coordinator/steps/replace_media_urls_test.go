@@ -19,6 +19,7 @@ package steps
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"math"
 	"net"
@@ -49,7 +50,7 @@ func newLoopbackStep(t *testing.T, params map[string]any) *ReplaceMediaURLsStep 
 }
 
 func TestReplaceMediaURLsStep_DownloadsAndInlines(t *testing.T) {
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write([]byte("jpeg-bytes"))
 	}))
@@ -100,7 +101,7 @@ func TestReplaceMediaURLsStep_DownloadsAndInlines(t *testing.T) {
 }
 
 func TestReplaceMediaURLsStep_Responses_DownloadsAndInlines(t *testing.T) {
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", testImageJPEGContentType)
 		_, _ = w.Write([]byte("jpeg-bytes"))
 	}))
@@ -246,8 +247,57 @@ func TestReplaceMediaURLsStep_NoImages(t *testing.T) {
 	}
 }
 
+func TestReplaceMediaURLsStep_RawPromptItems(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("jpeg-bytes"))
+	}))
+	defer imageServer.Close()
+
+	for _, tc := range []struct {
+		name  string
+		path  string
+		field string
+		items string
+	}{
+		{
+			name:  "chat completions",
+			path:  reqcommon.PathChatCompletions,
+			field: "messages",
+			items: `[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + imageServer.URL + `/photo.jpg"}}]}]`,
+		},
+		{
+			name:  "responses",
+			path:  reqcommon.PathResponses,
+			field: "input",
+			items: `[{"role":"user","content":[{"type":"input_image","image_url":"` + imageServer.URL + `/photo.jpg"}]}]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := newLoopbackStep(t, map[string]any{})
+			reqCtx := &pipeline.RequestContext{
+				OriginalPath: tc.path,
+				Body:         map[string]any{tc.field: json.RawMessage(tc.items)},
+			}
+			if err := step.Execute(context.Background(), reqCtx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			items, ok := reqCtx.Body[tc.field].([]any)
+			if !ok {
+				t.Fatalf("%s is %T, want the edited array stored back", tc.field, reqCtx.Body[tc.field])
+			}
+			part := items[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+			url, _ := reqcommon.MediaPartURLRef(part)
+			if !strings.HasPrefix(url, "data:image/jpeg;base64,") {
+				t.Fatalf("expected data URI, got %s", url)
+			}
+		})
+	}
+}
+
 func TestReplaceMediaURLsStep_DownloadFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
@@ -338,7 +388,7 @@ func TestReplaceMediaURLsStep_DataURIInput(t *testing.T) {
 // so drift would associate hashes/placeholders with the wrong image. Asserted
 // in both source orderings.
 func TestReplaceMediaURLsStep_MixedHTTPAndDataURIOrdering(t *testing.T) {
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("downloaded-image-bytes"))
 	}))
@@ -568,7 +618,7 @@ func TestReplaceMediaURLsStep_AllowsAtLimit(t *testing.T) {
 }
 
 func TestReplaceMediaURLsStep_MultipleImages(t *testing.T) {
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("png-data"))
 	}))
@@ -813,7 +863,7 @@ func TestReplaceMediaURLsStep_EmptyContentType(t *testing.T) {
 }
 
 func TestReplaceMediaURLsStep_DownloadUnreachable(t *testing.T) {
-	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	imageServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	deadURL := imageServer.URL + "/gone.png"
 	imageServer.Close() // nothing is listening on this address now
 
