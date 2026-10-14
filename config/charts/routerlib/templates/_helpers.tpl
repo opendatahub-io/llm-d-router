@@ -162,6 +162,39 @@ false
 {{- end -}}
 
 {{/*
+Whether the standalone Envoy proxy renders a fallback route to the model
+servers. With fail-open on, ext_proc is skipped when EPP is unreachable, so
+nothing sets the destination header that original_destination_cluster routes
+on; the fallback route sends those requests to the pool through a headless
+Service instead.
+*/}}
+{{- define "llm-d-router.proxy.failOpenFallback.enabled" -}}
+{{- $proxy := include "llm-d-router.proxy" . | fromYaml | default dict -}}
+{{- if and (hasPrefix "llm-d-router-standalone" .Chart.Name) $proxy.enabled (eq (include "llm-d-router.proxyType" .) "envoy") (eq (include "llm-d-router.proxy.failOpen" .) "true") -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{/*
+Name of the headless Service that selects the model-server pods for the
+fail-open fallback route.
+*/}}
+{{- define "llm-d-router.proxy.fallbackServiceName" -}}
+{{- printf "%s-model-servers" (include "llm-d-router.name" .) -}}
+{{- end -}}
+
+{{/*
+Model-server port the fail-open fallback route sends requests to: the first
+entry of router.modelServers.targetPorts.
+*/}}
+{{- define "llm-d-router.proxy.fallbackPort" -}}
+{{- $ports := .Values.router.modelServers.targetPorts | default (list (dict "number" 8000)) -}}
+{{- (first $ports).number -}}
+{{- end -}}
+
+{{/*
 Return "true" if EPP is configured with secure (TLS) serving, "false" if
 router.epp.flags.secure-serving is explicitly set to false. Defaults to true
 so that the Envoy ext_proc cluster uses TLS by default.
@@ -545,6 +578,7 @@ Helper to check if priorityRouting is enabled across chart contexts.
 {{- include "llm-d-router.validations.epp.resources" . }}
 {{- include "llm-d-router.validations.epp.inferenceObjectives" . }}
 {{- include "llm-d-router.validations.epp.tokenizer" . }}
+{{- include "llm-d-router.validations.epp.latencyPredictor" . }}
 {{- include "llm-d-router.validations.epp.preferredBackends" . }}
 {{- include "llm-d-router.validations.epp.autoscaling" . }}
 {{- $isPriorityRouting := eq (include "llm-d-router.priorityRouting.enabled" .) "true" -}}
@@ -577,6 +611,16 @@ Tokenizer validations: require modelName and valid flavor for the render sidecar
 {{- fail (printf ".Values.router.tokenizer.flavor must be one of [python, rust], got %q" (dig "flavor" "" $tokenizer)) }}
 {{- end }}
 {{- end }}
+{{- end -}}
+
+{{/*
+Latency predictor validations
+*/}}
+{{- define "llm-d-router.validations.epp.latencyPredictor" -}}
+{{- $mode := include "llm-d-router.latencyPredictor.mode" . -}}
+{{- if not (or (eq $mode "sidecar") (eq $mode "service")) -}}
+{{- fail (printf ".Values.router.latencyPredictor.mode must be one of [sidecar, service], got %q" $mode) -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
@@ -617,10 +661,16 @@ The EPP parses its plugin configuration once at startup and never re-reads the
 mounted file, so a helm upgrade that touches only a ConfigMap has to change the
 pod template or the running pod keeps its old configuration. Hash the whole
 config partial rather than one ConfigMap: it renders the plugins, proxy and
-latency-predictor ConfigMaps, and all of them are mounted into this pod.
+latency-predictor ConfigMaps. In service mode the latency-predictor ConfigMaps
+belong to the predictor Deployments, so they are left out and a
+predictor-only change does not restart EPP.
 */}}
 {{- define "llm-d-epp.podAnnotations" -}}
+{{- if eq (include "llm-d-router.latencyPredictor.mode" .) "service" -}}
+checksum/config: {{ include "llm-d-epp.router-config" . | sha256sum }}
+{{- else -}}
 checksum/config: {{ include "llm-d-epp.config" . | sha256sum }}
+{{- end }}
 {{- with .Values.router.epp.podAnnotations }}
 {{- toYaml . | nindent 0 }}
 {{- end }}
