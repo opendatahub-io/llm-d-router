@@ -56,7 +56,9 @@ jobs:
           # dependabot commits its own Signed-off-by trailer, but under the
           # noreply author address rather than the support@github.com address
           # in the trailer, so the exact-email match never succeeds.
-          bot_allowlist="dependabot[bot]"
+          # crucible-bot signs off with its own noreply address, but the
+          # "[bot]" in that address is outside the trailer email pattern.
+          bot_allowlist="dependabot[bot] crucible-bot[bot]"
 
           fail=0
           for c in $(git rev-list "$base..$head"); do
