@@ -36,6 +36,7 @@ type Matched struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*Matched_Token
 	//	*Matched_Str
 	//	*Matched_Tokens
@@ -338,6 +339,7 @@ type FinishReason struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Kind:
+	//
 	//	*FinishReason_Stop
 	//	*FinishReason_Length
 	//	*FinishReason_Abort

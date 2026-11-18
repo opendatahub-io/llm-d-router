@@ -83,6 +83,7 @@ type StringOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*StringOrList_One
 	//	*StringOrList_Many
 	Value isStringOrList_Value `protobuf_oneof:"value"`
@@ -213,6 +214,7 @@ type StringListOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*StringListOrList_One
 	//	*StringListOrList_Many
 	Value isStringListOrList_Value `protobuf_oneof:"value"`
@@ -340,6 +342,7 @@ type BoolOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*BoolOrList_One
 	//	*BoolOrList_Many
 	Value isBoolOrList_Value `protobuf_oneof:"value"`
@@ -467,6 +470,7 @@ type Int64OrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*Int64OrList_One
 	//	*Int64OrList_Many
 	Value isInt64OrList_Value `protobuf_oneof:"value"`
@@ -594,6 +598,7 @@ type TokenIdsOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*TokenIdsOrList_One
 	//	*TokenIdsOrList_Many
 	Value isTokenIdsOrList_Value `protobuf_oneof:"value"`
@@ -771,6 +776,7 @@ type OptionalStringOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*OptionalStringOrList_One
 	//	*OptionalStringOrList_Many
 	Value isOptionalStringOrList_Value `protobuf_oneof:"value"`
@@ -945,6 +951,7 @@ type OptionalInt64OrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*OptionalInt64OrList_One
 	//	*OptionalInt64OrList_Many
 	Value isOptionalInt64OrList_Value `protobuf_oneof:"value"`

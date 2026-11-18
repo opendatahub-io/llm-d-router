@@ -136,6 +136,7 @@ type GenerateRequest struct {
 	RequestId string `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	Model     string `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
 	// Types that are assignable to Prompt:
+	//
 	//	*GenerateRequest_Text
 	//	*GenerateRequest_TokenIds
 	Prompt isGenerateRequest_Prompt `protobuf_oneof:"prompt"`
@@ -641,6 +642,7 @@ type DecodingParameters struct {
 	// Control structured outputs
 	//
 	// Types that are assignable to StructuredOutput:
+	//
 	//	*DecodingParameters_Json
 	//	*DecodingParameters_Regex
 	//	*DecodingParameters_Choice
@@ -1100,6 +1102,7 @@ type CandidateTokens struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Select:
+	//
 	//	*CandidateTokens_TopN
 	//	*CandidateTokens_TokenIds
 	//	*CandidateTokens_All
@@ -1449,12 +1452,13 @@ type FinishInfo struct {
 	// One of these will be set when finish_reason == STOP
 	//
 	// Types that are assignable to StopReason:
+	//
 	//	*FinishInfo_StopTokenId
 	//	*FinishInfo_EosTokenId
 	//	*FinishInfo_StopString
 	StopReason       isFinishInfo_StopReason `protobuf_oneof:"stop_reason"`
 	KvTransferParams *structpb.Struct        `protobuf:"bytes,6,opt,name=kv_transfer_params,json=kvTransferParams,proto3" json:"kv_transfer_params,omitempty"`
-	//uint64 seed = 7;
+	// uint64 seed = 7;
 	EcTransferParams *structpb.Struct `protobuf:"bytes,8,opt,name=ec_transfer_params,json=ecTransferParams,proto3" json:"ec_transfer_params,omitempty"`
 	NumCachedTokens  *uint32          `protobuf:"varint,9,opt,name=num_cached_tokens,json=numCachedTokens,proto3,oneof" json:"num_cached_tokens,omitempty"`
 }
@@ -1681,6 +1685,7 @@ type MediaItem struct {
 
 	Modality Modality `protobuf:"varint,1,opt,name=modality,proto3,enum=vllm.Modality" json:"modality,omitempty"`
 	// Types that are assignable to Source:
+	//
 	//	*MediaItem_Url
 	//	*MediaItem_DataUri
 	//	*MediaItem_RawBytes

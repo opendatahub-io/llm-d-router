@@ -467,6 +467,7 @@ type KvHintsEnvelopeOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*KvHintsEnvelopeOrList_One
 	//	*KvHintsEnvelopeOrList_Many
 	Value isKvHintsEnvelopeOrList_Value `protobuf_oneof:"value"`
@@ -777,6 +778,7 @@ type SamplingParamsOrList struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*SamplingParamsOrList_One
 	//	*SamplingParamsOrList_Many
 	Value isSamplingParamsOrList_Value `protobuf_oneof:"value"`
@@ -1665,6 +1667,7 @@ type GenerateStreamItem struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Item:
+	//
 	//	*GenerateStreamItem_Frame
 	//	*GenerateStreamItem_Error
 	Item isGenerateStreamItem_Item `protobuf_oneof:"item"`
@@ -1962,6 +1965,7 @@ type MediaItem struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*MediaItem_Source
 	//	*MediaItem_Ref
 	Value isMediaItem_Value `protobuf_oneof:"value"`
@@ -2240,6 +2244,7 @@ type MediaInput struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Value:
+	//
 	//	*MediaInput_Item
 	//	*MediaInput_Many
 	//	*MediaInput_Nested
