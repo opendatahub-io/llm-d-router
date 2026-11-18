@@ -324,6 +324,11 @@ terminate the plugin -- the datastore retains its previous state.
 Atomic file replacement (write to a temp file then rename) triggers a
 `Create` event and is handled correctly.
 
+On Docker Desktop for macOS, a host-side atomic replace of a bind-mounted
+endpoints file does not reach the watch inside the container, and later
+changes to the file are not reloaded until the EPP restarts. Edit the file in
+place, or restart the EPP after replacing it.
+
 ### Validation rules
 
 The plugin fails at startup (before `Start` returns an error) if:
@@ -446,8 +451,12 @@ endpoints:
 
 Save as `/etc/epp/config.yaml`.  This example uses the default KV-cache
 utilization scorer and random picker -- adapt scheduling plugins as needed.
+With a single scheduling profile, the EPP adds the `single-profile-handler`
+itself, so the configuration does not list a profile handler.
 
 ```yaml
+apiVersion: llm-d.ai/v1
+kind: EndpointPickerConfig
 plugins:
   - name: file-disc
     type: file-discovery
@@ -461,16 +470,11 @@ plugins:
   - name: random-picker
     type: random-picker
 
-  - name: single-profile
-    type: single-profile-handler
-    parameters:
-      scorer: kv-cache-scorer
-      picker: random-picker
-
 schedulingProfiles:
   - name: default
     plugins:
-      - pluginRef: single-profile
+      - pluginRef: kv-cache-scorer
+      - pluginRef: random-picker
 
 dataLayer:
   discovery:
@@ -486,16 +490,22 @@ epp \
   --config-file /etc/epp/config.yaml \
   --grpc-port 9002 \
   --grpc-health-port 9003 \
-  --metrics-port 9090
+  --metrics-port 9090 \
+  --secure-serving=false
 ```
+
+The EPP serves the `ext_proc` gRPC listener over TLS with a self-signed
+certificate by default. `--secure-serving=false` serves it in plaintext,
+which matches the `epp` cluster in the Envoy config below. To keep TLS
+enabled, see [TLS](tls.md).
 
 `--pool-name` is optional in file discovery mode and defaults to `epp` if
 unset. It is used as the internal pool identifier in the scheduler and
 metrics. The value is arbitrary -- it does not need to match any
 Kubernetes object.
 
-The EPP logs `EPP starting (file discovery mode)` on startup and emits a
-log line for each endpoint loaded from the file.
+The EPP logs `EPP starting (file discovery mode)` on startup, and
+`watching endpoints file for changes` when `watchFile` is `true`.
 
 ### 4. Envoy config
 
@@ -659,10 +669,11 @@ func (d *MyDiscovery) Start(ctx context.Context, notifier fwkdl.DiscoveryNotifie
 }
 ```
 
-Register the factory in the runner before calling `Run`:
+Register the factory in the runner before calling `Run` (see
+[Registering out-of-tree plugins](plugins-vs-builtins.md#registering-out-of-tree-plugins)):
 
 ```go
-fwkplugin.Register(myplugin.PluginType, myplugin.Factory)
+fwkplugin.Register(myplugin.PluginType, fwkplugin.StabilityAlpha, myplugin.Factory)
 ```
 
 Then reference it in the EPP config:

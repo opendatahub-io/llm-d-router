@@ -21,10 +21,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	configPb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	extProcPb "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
@@ -41,6 +43,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 	grpcmetadata "google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
+	"k8s.io/apimachinery/pkg/util/sets"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
@@ -49,6 +52,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	"github.com/llm-d/llm-d-router/pkg/common/routing"
+	fwkrequest "github.com/llm-d/llm-d-router/pkg/epp/framework/common/request"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/anthropic"
@@ -56,6 +60,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/passthrough"
 	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 	"github.com/llm-d/llm-d-router/pkg/epp/metrics"
+	"github.com/llm-d/llm-d-router/pkg/epp/util/request"
 )
 
 func TestExtractTraceContext(t *testing.T) {
@@ -177,12 +182,26 @@ func TestHandleRequestHeaders(t *testing.T) {
 			wantTarget:    "new-model",
 		},
 		{
+			name: "Falls back to old aliases when the new control headers are empty",
+			headers: []*configPb.HeaderValue{
+				{Key: metadata.ObjectiveKey, Value: ""},
+				{Key: metadata.OldObjectiveKey, Value: "old-objective"},
+				{Key: metadata.ModelNameRewriteKey, Value: ""},
+				{Key: metadata.OldModelNameRewriteKey, Value: "old-model"},
+			},
+			wantObjective: "old-objective",
+			wantTarget:    "old-model",
+		},
+		{
 			name: "Drops client-supplied routing headers",
 			headers: []*configPb.HeaderValue{
 				{Key: "X-Prefiller-Host-Port", Value: "10.0.0.1:9090"},
 				{Key: routing.EncoderEndpointsHeader, Value: "10.0.0.2:9090"},
 				{Key: routing.DataParallelEndpointHeader, Value: "10.0.0.3:9090"},
-				{Key: routing.KVCacheSourceHeader, Value: "10.0.0.4:9090"},
+				{Key: routing.KVCachePrefillHeader, Value: "10.0.0.1:7777"},
+				{Key: routing.KVCacheSourceHeader, Value: "10.0.0.4:7777"},
+				{Key: routing.LegacyKVCacheSourceHeaders[0], Value: "10.0.0.4:8000"},
+				{Key: routing.LegacyKVCacheSourceHeaders[1], Value: "10.0.0.4:8000"},
 				{Key: "x-test", Value: "val"},
 			},
 			wantHeaders: map[string]string{"x-test": "val"},
@@ -190,7 +209,10 @@ func TestHandleRequestHeaders(t *testing.T) {
 				routing.PrefillEndpointHeader,
 				routing.EncoderEndpointsHeader,
 				routing.DataParallelEndpointHeader,
+				routing.KVCachePrefillHeader,
 				routing.KVCacheSourceHeader,
+				routing.LegacyKVCacheSourceHeaders[0],
+				routing.LegacyKVCacheSourceHeaders[1],
 			},
 		},
 	}
@@ -518,9 +540,12 @@ func TestGenerateRequestHeaderResponse_RemovesUnsetRoutingHeaders(t *testing.T) 
 	// supplying either name must not reach the sidecar.
 	canonical := []string{
 		routing.PrefillEndpointHeader,
+		routing.KVCachePrefillHeader,
+		routing.KVCacheSourceHeader,
+		routing.LegacyKVCacheSourceHeaders[0],
+		routing.LegacyKVCacheSourceHeaders[1],
 		routing.EncoderEndpointsHeader,
 		routing.DataParallelEndpointHeader,
-		routing.KVCacheSourceHeader,
 		routing.EndpointPinHeader,
 	}
 	allRoutingHeaders := make([]string, 0, 2*len(canonical))
@@ -555,8 +580,10 @@ func TestGenerateRequestHeaderResponse_RemovesUnsetRoutingHeaders(t *testing.T) 
 				routing.EncoderEndpointsHeader,
 				routing.LegacyEncoderEndpointsHeader,
 				routing.DataParallelEndpointHeader,
+				routing.KVCachePrefillHeader,
 				routing.KVCacheSourceHeader,
-				routing.LegacyKVCacheSourceHeader,
+				routing.LegacyKVCacheSourceHeaders[0],
+				routing.LegacyKVCacheSourceHeaders[1],
 				routing.EndpointPinHeader,
 			},
 		},
@@ -571,8 +598,10 @@ func TestGenerateRequestHeaderResponse_RemovesUnsetRoutingHeaders(t *testing.T) 
 				routing.EncoderEndpointsHeader,
 				routing.LegacyEncoderEndpointsHeader,
 				routing.DataParallelEndpointHeader,
+				routing.KVCachePrefillHeader,
 				routing.KVCacheSourceHeader,
-				routing.LegacyKVCacheSourceHeader,
+				routing.LegacyKVCacheSourceHeaders[0],
+				routing.LegacyKVCacheSourceHeaders[1],
 				routing.EndpointPinHeader,
 			},
 		},
@@ -605,10 +634,52 @@ func TestGenerateRequestHeaderResponse_RemovesUnsetRoutingHeaders(t *testing.T) 
 				assert.Equal(t, v, gotSet[k])
 			}
 			// The context is unsampled, so client copies of the attribution handoff are removed too.
-			wantRemoved := slices.Concat(tc.wantRemoved, []string{tracing.FairnessIDHandoffHeader, tracing.FairnessSourceHandoffHeader})
+			wantRemoved := slices.Concat(tc.wantRemoved, clientControlHeaders, []string{tracing.FairnessIDHandoffHeader, tracing.FairnessSourceHandoffHeader})
 			assert.ElementsMatch(t, wantRemoved, mutation.GetRemoveHeaders())
 		})
 	}
+}
+
+// clientControlHeaders are the input control and output injection names,
+// aliases included, that generateHeaders leaves unset on an unsampled request.
+var clientControlHeaders = sets.List(request.InputControlHeaders.
+	Union(request.OutputInjectionHeaders).
+	Difference(sets.New(
+		metadata.DestinationEndpointKey,
+		tracing.FairnessIDHandoffHeader,
+		tracing.FairnessSourceHandoffHeader,
+	)))
+
+// Envoy keeps a client header unless the mutation removes it, so a client copy
+// of a control or injection name reaches the model server unless it is listed
+// in RemoveHeaders.
+func TestGenerateRequestHeaderResponse_RemovesClientControlHeaders(t *testing.T) {
+	t.Parallel()
+
+	headers := map[string]string{metadata.DestinationEndpointKey: "9.9.9.9:1"}
+	for _, h := range clientControlHeaders {
+		headers[h] = "client-value"
+	}
+	reqCtx := &RequestContext{
+		TargetEndpoint: "1.2.3.4:8080",
+		Request:        &Request{Headers: headers},
+		Response:       &Response{},
+	}
+
+	mutation := (&StreamingServer{}).generateRequestHeaderResponse(context.Background(), reqCtx).
+		GetRequestHeaders().GetResponse().GetHeaderMutation()
+
+	gotSet := make(map[string]string)
+	for _, h := range mutation.GetSetHeaders() {
+		gotSet[h.Header.Key] = string(h.Header.RawValue)
+	}
+	for _, h := range clientControlHeaders {
+		assert.Contains(t, mutation.GetRemoveHeaders(), h)
+		assert.NotContains(t, gotSet, h)
+	}
+	// EPP replaces the client's destination, so the name is set and not removed.
+	assert.Equal(t, "1.2.3.4:8080", gotSet[metadata.DestinationEndpointKey])
+	assert.NotContains(t, mutation.GetRemoveHeaders(), metadata.DestinationEndpointKey)
 }
 
 func TestFallbackToRandomEndpoint(t *testing.T) {
@@ -682,19 +753,279 @@ func TestFallbackToRandomEndpoint(t *testing.T) {
 	}
 }
 
+func TestFallbackToRandomEndpointWithoutEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := &StreamingServer{director: &emptyPoolDirector{}}
+	reqCtx := &RequestContext{
+		Request:  &Request{Headers: make(map[string]string)},
+		Response: &Response{Headers: make(map[string]string)},
+	}
+
+	err := server.fallbackToRandomEndpoint(context.Background(), reqCtx, 0)
+	var epErr errcommon.Error
+	require.ErrorAs(t, err, &epErr)
+	assert.Equal(t, errcommon.ServiceUnavailable, epErr.Code)
+	assert.Equal(t, string(errcommon.RequestDroppedReasonNoEndpoints), epErr.Headers[errcommon.RequestDroppedReasonHeaderKey])
+}
+
+type emptyPoolDirector struct {
+	Director
+}
+
+func (*emptyPoolDirector) GetRandomEndpoint() *datalayer.EndpointMetadata {
+	return nil
+}
+
+func (*emptyPoolDirector) GetRandomDecodeEndpoint() *datalayer.EndpointMetadata {
+	return nil
+}
+
+func headersFrame(headers map[string]string) *extProcPb.ProcessingRequest_RequestHeaders {
+	hv := make([]*configPb.HeaderValue, 0, len(headers))
+	for k, v := range headers {
+		hv = append(hv, &configPb.HeaderValue{Key: k, Value: v})
+	}
+	return &extProcPb.ProcessingRequest_RequestHeaders{
+		RequestHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: hv}},
+	}
+}
+
+func TestIsWebSocketUpgrade(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+		want    bool
+	}{
+		{
+			name:    "canonical upgrade",
+			headers: map[string]string{"connection": "Upgrade", "upgrade": "websocket"},
+			want:    true,
+		},
+		{
+			name:    "case-insensitive values and token list",
+			headers: map[string]string{"Connection": "keep-alive, UPGRADE", "Upgrade": "WebSocket"},
+			want:    true,
+		},
+		{
+			name:    "missing connection header",
+			headers: map[string]string{"upgrade": "websocket"},
+			want:    false,
+		},
+		{
+			name:    "missing upgrade header",
+			headers: map[string]string{"connection": "Upgrade"},
+			want:    false,
+		},
+		{
+			name:    "non-websocket upgrade",
+			headers: map[string]string{"connection": "Upgrade", "upgrade": "h2c"},
+			want:    false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isWebSocketUpgrade(headersFrame(tc.headers)))
+		})
+	}
+}
+
+func TestHandleRequestHeadersRejectsNonGetWebSocketUpgrade(t *testing.T) {
+	t.Parallel()
+
+	server := &StreamingServer{director: &mockDirectorRequest{}}
+	reqCtx := &RequestContext{
+		Request:  &Request{Headers: make(map[string]string)},
+		Response: &Response{Headers: make(map[string]string)},
+	}
+
+	err := server.HandleRequestHeaders(context.Background(), reqCtx, headersFrame(map[string]string{
+		":method":    http.MethodPost,
+		"connection": "Upgrade",
+		"upgrade":    "websocket",
+	}))
+
+	assert.Equal(t, errcommon.BadRequest, errcommon.CanonicalCode(err))
+	assert.Empty(t, reqCtx.TargetEndpoint)
+}
+
+func headersFrameLines(lines ...[2]string) *extProcPb.ProcessingRequest_RequestHeaders {
+	hv := make([]*configPb.HeaderValue, 0, len(lines))
+	for _, l := range lines {
+		hv = append(hv, &configPb.HeaderValue{Key: l[0], Value: l[1]})
+	}
+	return &extProcPb.ProcessingRequest_RequestHeaders{
+		RequestHeaders: &extProcPb.HttpHeaders{Headers: &configPb.HeaderMap{Headers: hv}},
+	}
+}
+
+func TestIsWebSocketUpgradeMultiLineHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		lines [][2]string
+		want  bool
+	}{
+		{
+			name: "upgrade token on the second Connection line",
+			lines: [][2]string{
+				{"Connection", "keep-alive"},
+				{"Connection", "Upgrade"},
+				{"Upgrade", "websocket"},
+			},
+			want: true,
+		},
+		{
+			name: "websocket on the second Upgrade line",
+			lines: [][2]string{
+				{"Upgrade", "h2c"},
+				{"Upgrade", "websocket"},
+				{"Connection", "Upgrade"},
+			},
+			want: true,
+		},
+		{
+			name: "no upgrade token on any Connection line",
+			lines: [][2]string{
+				{"Connection", "keep-alive"},
+				{"Connection", "close"},
+				{"Upgrade", "websocket"},
+			},
+			want: false,
+		},
+		{
+			name: "upgrade token without a websocket Upgrade line",
+			lines: [][2]string{
+				{"Connection", "Upgrade"},
+				{"Upgrade", "h2c"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isWebSocketUpgrade(headersFrameLines(tc.lines...)))
+		})
+	}
+}
+
+func TestHandleRequestHeaders_WebSocketUpgradePicksDecodeEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := &StreamingServer{director: &decodePickingDirector{}}
+	reqCtx := &RequestContext{
+		Request:  &Request{Headers: make(map[string]string)},
+		Response: &Response{Headers: make(map[string]string)},
+	}
+
+	err := server.HandleRequestHeaders(context.Background(), reqCtx, headersFrame(map[string]string{
+		":method":    http.MethodGet,
+		"connection": "Upgrade",
+		"upgrade":    "websocket",
+	}))
+
+	require.NoError(t, err)
+	assert.Equal(t, "1.2.3.4:80", reqCtx.TargetEndpoint,
+		"an upgrade must route through the decode picker, not the plain random pick")
+}
+
+func TestHandleRequestHeaders_WebSocketUpgradeWithoutDecodeEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := &StreamingServer{director: &emptyPoolDirector{}}
+	reqCtx := &RequestContext{
+		Request:  &Request{Headers: make(map[string]string)},
+		Response: &Response{Headers: make(map[string]string)},
+	}
+
+	err := server.HandleRequestHeaders(context.Background(), reqCtx, headersFrame(map[string]string{
+		":method":    http.MethodGet,
+		"connection": "Upgrade",
+		"upgrade":    "websocket",
+	}))
+
+	assert.Equal(t, errcommon.ServiceUnavailable, errcommon.CanonicalCode(err))
+	assert.Empty(t, reqCtx.TargetEndpoint)
+}
+
+func TestProcessClosesStreamAfterWebSocketUpgrade(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &blockingReplayProcessServer{replayProcessServer{ctx: ctx, reqs: []*extProcPb.ProcessingRequest{
+		{Request: headersFrame(map[string]string{
+			":method":    http.MethodGet,
+			":path":      "/v1/realtime",
+			"connection": "Upgrade",
+			"upgrade":    "websocket",
+		})},
+		// A WebSocket frame the EPP must never receive.
+		{Request: &extProcPb.ProcessingRequest_RequestBody{
+			RequestBody: &extProcPb.HttpBody{Body: []byte{0x81, 0x82, 0, 0, 0, 0, 'h', 'i'}},
+		}},
+	}}}
+	server := NewStreamingServer(nil, &mockDirectorRequest{}, nil, 0)
+
+	done := make(chan error, 1)
+	go func() { done <- server.Process(stream) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Process kept the ext_proc stream open after a WebSocket upgrade")
+	}
+
+	require.Len(t, stream.sentResponses, 1)
+	setHeaders := map[string]string{}
+	for _, h := range stream.sentResponses[0].GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		setHeaders[h.GetHeader().GetKey()] = string(h.GetHeader().GetRawValue())
+	}
+	assert.Equal(t, "1.2.3.4:80", setHeaders[metadata.DestinationEndpointKey])
+	assert.NotContains(t, setHeaders, "connection")
+	assert.NotContains(t, setHeaders, "upgrade")
+}
+
 type mockDirectorRequest struct {
 	Director
-	endpoint *datalayer.EndpointMetadata
+	endpoint       *datalayer.EndpointMetadata
+	decodeEndpoint *datalayer.EndpointMetadata
 }
 
 func (m *mockDirectorRequest) GetRandomEndpoint() *datalayer.EndpointMetadata {
 	if m.endpoint != nil {
 		return m.endpoint
 	}
+	return defaultTestEndpoint()
+}
+
+func (m *mockDirectorRequest) GetRandomDecodeEndpoint() *datalayer.EndpointMetadata {
+	if m.decodeEndpoint != nil {
+		return m.decodeEndpoint
+	}
+	return defaultTestEndpoint()
+}
+
+func defaultTestEndpoint() *datalayer.EndpointMetadata {
 	return &datalayer.EndpointMetadata{
 		Address: "1.2.3.4",
 		Port:    "80",
 	}
+}
+
+// decodePickingDirector answers every plain random pick with no endpoint, so a
+// test can tell whether the request path used the decode picker.
+type decodePickingDirector struct {
+	mockDirectorRequest
+}
+
+func (*decodePickingDirector) GetRandomEndpoint() *datalayer.EndpointMetadata {
+	return nil
 }
 
 // Attribution must be established from the incoming headers before the Director
@@ -717,7 +1048,7 @@ func TestRequestAttributionAtIngress(t *testing.T) {
 	}{
 		{"canonical header", []*configPb.HeaderValue{{Key: metadata.FlowFairnessIDKey, Value: "team-a"}}, "team-a", tracing.AttributionSourceHeader},
 		{"deprecated alias", []*configPb.HeaderValue{{Key: metadata.OldFlowFairnessIDKey, Value: "team-b"}}, "team-b", tracing.AttributionSourceHeader},
-		{"empty canonical shadows alias", []*configPb.HeaderValue{{Key: metadata.FlowFairnessIDKey, Value: ""}, {Key: metadata.OldFlowFairnessIDKey, Value: "team-b"}}, reqcommon.DefaultFairnessID, tracing.AttributionSourceDefault},
+		{"empty canonical falls back to alias", []*configPb.HeaderValue{{Key: metadata.FlowFairnessIDKey, Value: ""}, {Key: metadata.OldFlowFairnessIDKey, Value: "team-b"}}, "team-b", tracing.AttributionSourceHeader},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := extractTraceContext(context.Background(), &extProcPb.ProcessingRequest_RequestHeaders{
@@ -874,7 +1205,7 @@ type requestIntegrityDirector struct {
 	checkSnapshot      func(context.Context, []byte)
 }
 
-func (d *requestIntegrityDirector) HandleRequest(ctx context.Context, reqCtx *RequestContext, _ *fwkrh.InferenceRequestBody) (*RequestContext, error) {
+func (d *requestIntegrityDirector) HandleRequest(ctx context.Context, reqCtx *RequestContext, _ *fwkrequest.InferenceRequestBody) (*RequestContext, error) {
 	d.called = true
 	if d.checkSnapshot != nil {
 		d.checkSnapshot(ctx, reqCtx.Request.RawBody)
@@ -1066,7 +1397,7 @@ func TestProcessRequestToolCallingIntegrity(t *testing.T) {
 			name: "chat invalid tools type rejects only tools", path: reqcommon.PathChatCompletions,
 			body:             `{"model":"m","messages":[{"role":"user","content":"hello"}],"tools":"private_tool_value","tool_choice":"required","parallel_tool_calls":true}`,
 			wantErrorStatus:  envoyTypePb.StatusCode_BadRequest,
-			wantErrorMessage: "error extracting request body: invalid chat completions request: must have valid messages field",
+			wantErrorMessage: "error extracting request body: invalid chat completions request: tools: cannot unmarshal string into array",
 			wantSurface:      "chat_completions", wantChoice: "required",
 			wantFields: map[string]string{"tools": "rejected"},
 		},
@@ -1074,7 +1405,7 @@ func TestProcessRequestToolCallingIntegrity(t *testing.T) {
 			name: "chat invalid message role does not reject tools", path: reqcommon.PathChatCompletions,
 			body:             `{"model":"m","messages":[{"role":123,"content":"hello"}],"tools":[],"tool_choice":"required"}`,
 			wantErrorStatus:  envoyTypePb.StatusCode_BadRequest,
-			wantErrorMessage: "error extracting request body: invalid chat completions request: must have valid messages field",
+			wantErrorMessage: "error extracting request body: invalid chat completions request: messages.0.role: cannot unmarshal number into string",
 			wantSurface:      "chat_completions", wantChoice: "required",
 		},
 		{
@@ -1258,7 +1589,7 @@ func TestProcessRequestToolCallingIntegrity(t *testing.T) {
 				require.Equal(t, tt.wantErrorStatus, srv.sentResponses[0].GetImmediateResponse().GetStatus().GetCode())
 				wantErrorMessage := tt.wantErrorMessage
 				if tt.path == reqcommon.PathMessages {
-					var messages fwkrh.MessagesRequest
+					var messages fwkrequest.MessagesRequest
 					if decodeErr := json.Unmarshal([]byte(tt.body), &messages); decodeErr != nil {
 						wantErrorMessage = "error parsing messages request: " + decodeErr.Error()
 					}
