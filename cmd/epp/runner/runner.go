@@ -65,6 +65,7 @@ import (
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	fwkfc "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/flowcontrol"
 	fwkplugin "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/plugin"
+	fwkrh "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requesthandling"
 	attrconcurrency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/concurrency"
 	attrgpu "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/gpu"
 	attrlatency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/latency"
@@ -72,6 +73,7 @@ import (
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 	attrsession "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/session"
 	attrtopology "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/topology"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/cross_plugin/p2p"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/cross_plugin/redis"
 	discoveryfile "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/discovery/file"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/discovery/k8speer"
@@ -91,6 +93,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/globalstrict"
 	programaware "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/program-aware"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/roundrobin"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/fairness/weightedfairshare"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/edf"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/fcfs"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/ordering/slodeadline"
@@ -100,36 +103,43 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/usagelimits"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/usagelimits/priorityholdback"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/flowcontrol/usagelimits/softreflectiveceiling"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/latencyslo"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/admitter/probabilisticadmitter"
-	reqdataprodprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/approximateprefix"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/burstprefix"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/inflightload"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/latencyobserver"
-	mmproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/multimodal"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/p2psource"
-	preciseproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/preciseprefixcache"
-	latencyproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/predictedlatency"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/sessionid"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/sessionstate"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/headerstamp"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/requestattributereporter"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/requestheader/agentidentity"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/requestheader/outlenbucket"
-	respondermodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/responder/models"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/responsereceived/topologystamp"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/screener/disaggregatedsetrollout"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/screener/endpointpin"
-	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/selectivekv"
-	testresponsereceived "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/test/responsereceived"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/admitter/latencyslo"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/admitter/probabilisticadmitter"
+	reqdataprodprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/approximateprefix"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/burstprefix"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/inflightload"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/latencyobserver"
+	mmproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/multimodal"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/p2psource"
+	preciseproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/preciseprefixcache"
+	latencyproducer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/predictedlatency"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/sessionid"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/sessionstate"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/dataproducer/tokenizer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/forwardtokens"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/headerstamp"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/anthropic"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/openai"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/passthrough"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/sglanggrpc"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/sglanghttp"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/systemone"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vertexai"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vllmgrpc"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vllmhttp"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/vllminference"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/requestattributereporter"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/requestheader/agentidentity"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/requestheader/agentlineage"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/requestheader/outlenbucket"
+	respondermodels "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/responder/models"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/responsereceived/headercopy"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/responsereceived/latencyreporter"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/responsereceived/topologystamp"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/screener/disaggregatedsetrollout"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/screener/endpointpin"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/selectivekv"
+	testresponsereceived "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/test/responsereceived"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/bylabel"
 	endpointattributefilter "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/endpointattribute"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/endpointhealth"
@@ -470,6 +480,7 @@ func (r *Runner) setup(ctx, servingCtx context.Context, cfg *rest.Config, opts *
 	metricsutil.SetFairnessIDLabelLimit(opts.FairnessIDMetricLabelLimit)
 	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
 	metrics.RegisterWithOptions(metricsRegisterOptions(rawConfig), r.customCollectors...)
+	metrics.InitFairnessIDResolutionMetrics(gknn.Name)
 	metrics.RecordInferenceExtensionInfo(version.CommitSHA, version.BuildRef)
 	// Register metrics handler.
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
@@ -545,7 +556,7 @@ func (r *Runner) setup(ctx, servingCtx context.Context, cfg *rest.Config, opts *
 		requestcontrol.WithDisableEndpointSubsetFilter(opts.DisableEndpointSubsetFilter)))
 	endpointCandidates, admissionController, priorityBandControlPlane, requestEvictor := r.initAdmissionControl(servingCtx, opts, eppConfig, endpointCandidates)
 
-	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig)
+	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig, gknn.Name)
 	if requestEvictor != nil {
 		director.SetRequestEvictor(requestEvictor)
 	}
@@ -561,7 +572,7 @@ func (r *Runner) setup(ctx, servingCtx context.Context, cfg *rest.Config, opts *
 		setupLog.Error(err, "Failed to setup EPP controllers")
 		return nil, nil, err
 	}
-	if err := r.setupPeerDiscovery(mgr, rawConfig); err != nil {
+	if err := r.setupPeerDiscovery(mgr, rawConfig, gknn.Namespace); err != nil {
 		setupLog.Error(err, "Failed to setup peer discovery")
 		return nil, nil, err
 	}
@@ -666,7 +677,8 @@ func setupDatastore(ctx context.Context, epFactory datalayer.EndpointFactory,
 func (r *Runner) registerInTreePlugins() {
 	// request control screeners
 	// Alpha
-	fwkplugin.Register(disaggregatedsetrollout.PluginType, fwkplugin.StabilityAlpha, disaggregatedsetrollout.Factory)
+	fwkplugin.RegisterWithPluginDependencies(disaggregatedsetrollout.PluginType, fwkplugin.StabilityAlpha,
+		disaggregatedsetrollout.Factory, disaggregatedsetrollout.ConfigParser)
 	fwkplugin.Register(endpointpin.PluginType, fwkplugin.StabilityAlpha, endpointpin.Factory)
 
 	// request control pre-request handlers
@@ -676,6 +688,8 @@ func (r *Runner) registerInTreePlugins() {
 	// request control response-received handlers
 	// Alpha
 	fwkplugin.Register(topologystamp.PluginType, fwkplugin.StabilityAlpha, topologystamp.Factory)
+	fwkplugin.Register(latencyreporter.PluginType, fwkplugin.StabilityAlpha, latencyreporter.PluginFactory)
+	fwkplugin.Register(headercopy.PluginType, fwkplugin.StabilityAlpha, headercopy.Factory)
 
 	// bylabel role filters
 	// Stable
@@ -714,6 +728,7 @@ func (r *Runner) registerInTreePlugins() {
 	// cross-replica syncers
 	// Alpha
 	fwkplugin.Register(redis.RedisSyncerType, fwkplugin.StabilityAlpha, redis.RedisSyncerFactory)
+	fwkplugin.Register(p2p.P2PSyncerType, fwkplugin.StabilityAlpha, p2p.P2PSyncerFactory)
 
 	// data layer DCGM source/extractor
 	// Alpha
@@ -750,6 +765,7 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(p2psource.PluginType, fwkplugin.StabilityAlpha, p2psource.PluginFactory)
 	fwkplugin.Register(selectivekv.PluginType, fwkplugin.StabilityAlpha, selectivekv.PluginFactory)
 	fwkplugin.Register(loraresidency.Type, fwkplugin.StabilityAlpha, loraresidency.Factory)
+	fwkplugin.Register(forwardtokens.PluginType, fwkplugin.StabilityAlpha, forwardtokens.PluginFactory)
 	// multicluster variants
 	fwkplugin.Register(sessionaffinityfilter.MultiClusterFilterType, fwkplugin.StabilityAlpha, sessionaffinityfilter.MultiClusterFactory)
 	fwkplugin.Register(queuedepth.MultiClusterScorerType, fwkplugin.StabilityAlpha, queuedepth.MultiClusterScorerFactory)
@@ -772,6 +788,7 @@ func (r *Runner) registerInTreePlugins() {
 	// Alpha
 	fwkplugin.Register(evictfiltering.SheddableFilterType, fwkplugin.StabilityAlpha, evictfiltering.SheddableFilterFactory)
 	fwkplugin.Register(evictordering.PriorityThenTimeOrderingType, fwkplugin.StabilityAlpha, evictordering.PriorityThenTimeOrderingFactory)
+	fwkplugin.Register(weightedfairshare.WeightedFairShareFairnessPolicyType, fwkplugin.StabilityAlpha, weightedfairshare.WeightedFairShareFairnessPolicyFactory)
 	fwkplugin.Register(softreflectiveceiling.PolicyType, fwkplugin.StabilityAlpha, softreflectiveceiling.Factory)
 
 	// Register Request level data producer plugins as defaults for their respective data keys.
@@ -823,9 +840,12 @@ func (r *Runner) registerInTreePlugins() {
 	fwkplugin.Register(requestattributereporter.RequestAttributeReporterType, fwkplugin.StabilityBeta, requestattributereporter.RequestAttributeReporterPluginFactory)
 	fwkplugin.Register(openai.OpenAIParserType, fwkplugin.StabilityBeta, openai.OpenAIParserPluginFactory)
 	fwkplugin.Register(vllmgrpc.VllmGRPCParserType, fwkplugin.StabilityBeta, vllmgrpc.VllmGRPCParserPluginFactory)
+	fwkplugin.Register(vllminference.VllmInferenceParserType, fwkplugin.StabilityBeta, vllminference.VllmInferenceParserPluginFactory)
 	fwkplugin.Register(passthrough.PassthroughParserType, fwkplugin.StabilityBeta, passthrough.PassthroughParserPluginFactory)
 	fwkplugin.Register(anthropic.AnthropicParserType, fwkplugin.StabilityBeta, anthropic.AnthropicParserPluginFactory)
 	fwkplugin.Register(vllmhttp.VllmHTTPParserType, fwkplugin.StabilityBeta, vllmhttp.VllmHTTPParserPluginFactory)
+	fwkplugin.Register(systemone.SystemOneParserType, fwkplugin.StabilityBeta, systemone.SystemOneParserPluginFactory)
+	fwkplugin.Register(sglanggrpc.SGLangGRPCParserType, fwkplugin.StabilityBeta, sglanggrpc.SGLangGRPCParserPluginFactory)
 	fwkplugin.Register(sglanghttp.SGLangHTTPParserType, fwkplugin.StabilityBeta, sglanghttp.SGLangHTTPParserPluginFactory)
 	fwkplugin.Register(vertexai.VertexAIParserType, fwkplugin.StabilityBeta, vertexai.VertexAIParserPluginFactory)
 
@@ -847,6 +867,7 @@ func (r *Runner) registerInTreePlugins() {
 	// register request header processor plugins
 	// Alpha
 	fwkplugin.Register(agentidentity.PluginType, fwkplugin.StabilityAlpha, agentidentity.PluginFactory)
+	fwkplugin.Register(agentlineage.PluginType, fwkplugin.StabilityAlpha, agentlineage.PluginFactory)
 	fwkplugin.Register(outlenbucket.PluginType, fwkplugin.StabilityAlpha, outlenbucket.PluginFactory)
 }
 
@@ -909,7 +930,8 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	handle := fwkplugin.NewEppHandle(ctx, makePodListFunc(ds),
 		fwkplugin.WithMetricsRecorder(ctrlmetrics.Registry),
-		fwkplugin.WithRefreshMetricsInterval(refreshMetricsInterval))
+		fwkplugin.WithRefreshMetricsInterval(refreshMetricsInterval),
+		fwkplugin.WithSchedulingProfileNames(loader.SchedulingProfileNames(rawConfig)))
 	r.PluginHandle = handle
 	cfg, err := loader.InstantiateAndConfigure(rawConfig, handle, logger)
 
@@ -930,6 +952,15 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	// Add requestControl plugins
 	r.requestControlConfig.AddPlugins(handle.GetAllPlugins()...)
+	// Resolve producer phases after auto-created producers are added, so they
+	// follow the screeners and RequestHandling producers that consume their data.
+	producerPhases := datalayer.ResolveDataProducerPhases(handle.GetAllPlugins(), cfg.DataProducerPhases)
+	r.requestControlConfig.ApplyDataProducerPhases(producerPhases)
+	for name, phase := range producerPhases {
+		if phase == fwkrh.DataProducerPhaseRequestHandling {
+			logger.Info("DataProducer runs before screeners", "plugin", name, "phase", phase)
+		}
+	}
 
 	// Let plugins declare their datalayer source/extractor dependencies before Configure().
 	for _, p := range handle.GetAllPlugins() {
@@ -942,7 +973,7 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	// Sort data plugins in DAG order (topological sort). Also check DAG for cycles.
 	// This must run after auto-created producers are added so they are included in the ordering.
-	dag, err := datalayer.ValidateAndOrderDataDependencies(handle.GetAllPlugins())
+	dag, err := datalayer.ValidateAndOrderDataDependencies(handle.GetAllPlugins(), datalayer.WithDataProducerPhases(producerPhases))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load the configuration - %w", err)
 	}
@@ -957,6 +988,7 @@ func (r *Runner) parseConfigurationPhaseTwo(ctx context.Context, rawConfig *conf
 
 	r.parserRegistry = cfg.ParserRegistry
 	r.requestControlConfig.WithPropagatePriority(cfg.PropagatePriority)
+	r.requestControlConfig.WithComposeFairnessIDs(cfg.ComposeFairnessIDs)
 	logger.Info("loaded configuration from file/text successfully")
 
 	return cfg, nil
@@ -1093,12 +1125,19 @@ func (r *Runner) resolveDiscovery(rawConfig *configapiv1.EndpointPickerConfig) (
 
 // setupPeerDiscovery runs the PeerDiscovery plugin referenced by
 // rawConfig.DataLayer.Discovery.Peers, when set, as a manager runnable on
-// every replica. Discovered peers land in store. The plugin is expected to
-// have been instantiated and registered in r.PluginHandle by
+// every replica. Discovered peers land in a store handed to the configured
+// cross-replica syncer when it consumes them. A syncer that consumes them
+// fails setup without it, since it would never exchange state. The plugin is
+// expected to have been instantiated and registered in r.PluginHandle by
 // parseConfigurationPhaseTwo.
-func (r *Runner) setupPeerDiscovery(mgr ctrl.Manager, rawConfig *configapiv1.EndpointPickerConfig) error {
+func (r *Runner) setupPeerDiscovery(mgr ctrl.Manager, rawConfig *configapiv1.EndpointPickerConfig, poolNamespace string) error {
 	dl := rawConfig.DataLayer
 	if dl == nil || dl.Discovery == nil || dl.Discovery.Peers == nil {
+		syncer := r.PluginHandle.CrossReplicaSyncer()
+		if _, ok := syncer.(fwkdl.PeerConsumer); ok {
+			return fmt.Errorf("peerDiscovery: cross-replica syncer %q consumes the peer set, but dataLayer.discovery.peers is not configured",
+				syncer.TypedName().Name)
+		}
 		return nil
 	}
 
@@ -1111,13 +1150,34 @@ func (r *Runner) setupPeerDiscovery(mgr ctrl.Manager, rawConfig *configapiv1.End
 	if !ok {
 		return fmt.Errorf("peerDiscovery: plugin %q does not implement PeerDiscovery", ref)
 	}
+	if k8sPeers, ok := p.(*k8speer.Plugin); ok && k8sPeers.Namespace() != poolNamespace {
+		return fmt.Errorf("peerDiscovery: plugin %q namespace %q must match pool namespace %q: the EPP Pod cache only covers the pool namespace, so peer Pods would never be seen",
+			ref, k8sPeers.Namespace(), poolNamespace)
+	}
 
-	// TODO(#1892): Connect peerStore to CrossReplicaSyncer. See TestPeerDiscoveryFullWiring.
 	peerStore := statesync.NewMemoryPeerStore()
+	r.connectPeerStore(peerStore)
 	notifier := fwkdl.NewPeerNotifier(peerStore)
 	return mgr.Add(runnable.NoLeaderElection(manager.RunnableFunc(func(ctx context.Context) error {
 		return disc.Start(ctx, notifier)
 	})))
+}
+
+// connectPeerStore hands the peer set to the configured cross-replica syncer
+// when it consumes peers. A syncer backed by its own store does not implement
+// PeerConsumer, so discovery runs and the set stays unread; the log line says
+// so, because the peer set is then maintained for nothing.
+func (r *Runner) connectPeerStore(source fwkdl.PeerSource) {
+	syncer := r.PluginHandle.CrossReplicaSyncer()
+	consumer, ok := syncer.(fwkdl.PeerConsumer)
+	if !ok {
+		setupLog.Info("Peer discovery is configured but no cross-replica syncer consumes the peer set",
+			"syncerConfigured", syncer != nil)
+		return
+	}
+	consumer.SetPeerSource(source)
+	setupLog.Info("Connected the peer set to the cross-replica syncer",
+		"syncer", syncer.TypedName().String())
 }
 
 // initAdmissionControl builds the request admission controller, gated by the
@@ -1303,7 +1363,7 @@ func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Optio
 	// bands are provisioned here, before the server starts serving.
 	endpointCandidates, admissionController, bandControlPlane, requestEvictor := r.initAdmissionControl(r.servingCtx, opts, eppConfig, endpointCandidates)
 	provisionObjectiveBands(bandControlPlane, objectivePriorities)
-	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig)
+	director := requestcontrol.NewDirectorWithConfig(ds, scheduler, admissionController, endpointCandidates, r.requestControlConfig, poolName)
 	if requestEvictor != nil {
 		director.SetRequestEvictor(requestEvictor)
 	}
@@ -1322,8 +1382,10 @@ func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Optio
 		serverRunner.GrpcListener = r.grpcListener
 	}
 
+	metricsutil.SetFairnessIDLabelLimit(opts.FairnessIDMetricLabelLimit)
 	r.customCollectors = append(r.customCollectors, collectors.NewInferencePoolMetricsCollector(ds))
 	metrics.RegisterWithOptions(metricsRegisterOptions(rawConfig), r.customCollectors...)
+	metrics.InitFairnessIDResolutionMetrics(poolName)
 	metrics.RecordInferenceExtensionInfo(version.CommitSHA, version.BuildRef)
 
 	setupLog.Info("EPP starting (file discovery mode)",
@@ -1382,9 +1444,15 @@ func (r *Runner) runWithFileDiscovery(ctx context.Context, opts *runserver.Optio
 		return runnable.NoLeaderElection(runnable.GRPCServer("health", healthSrv, opts.GRPCHealthPort)).Start(ctx)
 	})
 	g.Add("metrics", func(ctx context.Context) error {
-		return serveMetrics(ctx, opts.MetricsPort, opts.EnablePprof)
+		return serveMetrics(ctx, opts.MetricsPort, opts.EnablePprof, r.PluginHandle)
 	})
-	return g.Run(ctx)
+	// A canceled context is the normal shutdown. Any other error ends the
+	// process with exit status 1, and no other line names it.
+	err = g.Run(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		setupLog.Error(err, "EPP stopped")
+	}
+	return err
 }
 
 // metricsShutdownTimeout bounds graceful shutdown of the metrics server so a
@@ -1397,7 +1465,7 @@ const metricsShutdownTimeout = 5 * time.Second
 // pkg/epp/metrics.Register), not the prometheus default registry. The handler
 // must serve ctrlmetrics.Registry directly; promhttp.Handler() would expose only
 // Go runtime/process metrics and silently omit every EPP metric.
-func serveMetrics(ctx context.Context, port uint16, enablePprof bool) error {
+func serveMetrics(ctx context.Context, port uint16, enablePprof bool, plugins fwkplugin.HandlePlugins) error {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{EnableOpenMetrics: true}))
 	if enablePprof {
@@ -1405,6 +1473,7 @@ func serveMetrics(ctx context.Context, port uint16, enablePprof bool) error {
 			mux.Handle(path, h)
 		}
 	}
+	mux.Handle(runserver.PluginStateDebugPath, runserver.NewPluginStateDebugHandler(plugins))
 	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()

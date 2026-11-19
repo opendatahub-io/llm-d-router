@@ -30,6 +30,7 @@ import (
 	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
 	metricsutil "github.com/llm-d/llm-d-router/pkg/common/observability/metrics"
 	"github.com/llm-d/llm-d-router/pkg/common/observability/toolcalling"
+	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
 	fwksched "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 )
@@ -79,6 +80,9 @@ func RegisterWithOptions(opts RegisterOptions, customCollectors ...prometheus.Co
 		// Register other metrics
 		metrics.Registry.MustRegister(llmdRequestCounter)
 		metrics.Registry.MustRegister(llmdRequestErrCounter)
+		metrics.Registry.MustRegister(llmdFairnessIDResolvedCounter)
+		metrics.Registry.MustRegister(llmdFairnessIDOverflowCounter)
+		metrics.Registry.MustRegister(llmdRequestOutcomeCounter)
 		metrics.Registry.MustRegister(llmdRequestLatencies)
 		metrics.Registry.MustRegister(llmdRequestSizes)
 		metrics.Registry.MustRegister(llmdResponseSizes)
@@ -129,6 +133,8 @@ func RegisterWithOptions(opts RegisterOptions, customCollectors ...prometheus.Co
 		metrics.Registry.MustRegister(llmdInferenceModelRewriteDecisionsTotal)
 		metrics.Registry.MustRegister(LlmdDataLayerPollErrorsTotal)
 		metrics.Registry.MustRegister(LlmdDataLayerExtractErrorsTotal)
+		metrics.Registry.MustRegister(LlmdDataLayerPollsTotal)
+		metrics.Registry.MustRegister(LlmdDataLayerPollDuration)
 		metrics.Registry.MustRegister(llmdToolCallingFieldStatusTotal)
 		for _, collector := range customCollectors {
 			metrics.Registry.MustRegister(collector)
@@ -141,6 +147,9 @@ func Reset() {
 	// Reset other metrics
 	llmdRequestCounter.Reset()
 	llmdRequestErrCounter.Reset()
+	llmdFairnessIDResolvedCounter.Reset()
+	llmdFairnessIDOverflowCounter.Reset()
+	llmdRequestOutcomeCounter.Reset()
 	llmdRequestLatencies.Reset()
 	llmdRequestSizes.Reset()
 	llmdResponseSizes.Reset()
@@ -189,6 +198,8 @@ func Reset() {
 	llmdInferenceModelRewriteDecisionsTotal.Reset()
 	LlmdDataLayerPollErrorsTotal.Reset()
 	LlmdDataLayerExtractErrorsTotal.Reset()
+	LlmdDataLayerPollsTotal.Reset()
+	LlmdDataLayerPollDuration.Reset()
 	llmdToolCallingFieldStatusTotal.Reset()
 }
 
@@ -200,13 +211,48 @@ func RecordRequestCounter(modelName, targetModelName string, apiSurface reqcommo
 	llmdRequestCounter.WithLabelValues(modelName, targetModelName, fairnessID, prioStr, apiSurface.String()).Inc()
 }
 
-// RecordRequestErrCounter records the number of error requests.
-func RecordRequestErrCounter(modelName, targetModelName string, apiSurface reqcommon.APISurface, fairnessID, priority string, code string) {
+// RecordRequestErrCounter records the number of error requests. The request's
+// trace is attached as an exemplar, so an error-rate spike links to a failing
+// request.
+func RecordRequestErrCounter(ctx context.Context, modelName, targetModelName string, apiSurface reqcommon.APISurface, fairnessID, priority string, code string) {
 	modelName, targetModelName = boundModels(modelName, targetModelName)
 	fairnessID = boundFairnessID(fairnessID)
 	if code != "" {
-		llmdRequestErrCounter.WithLabelValues(modelName, targetModelName, fairnessID, priority, apiSurface.String(), code).Inc()
+		metricsutil.AddWithTraceExemplar(ctx,
+			llmdRequestErrCounter.WithLabelValues(modelName, targetModelName, fairnessID, priority, apiSurface.String(), code),
+			1)
 	}
+}
+
+// InitFairnessIDResolutionMetrics creates the overflow series at 0 for every source, so a
+// rate or increase over the first overflow is not lost. The ratio rule in
+// docs/rules/fairness-id-rules.yaml also reads each replica's inference_pool from these series.
+func InitFairnessIDResolutionMetrics(inferencePool string) {
+	for _, source := range []string{
+		tracing.AttributionSourceHeader,
+		tracing.AttributionSourceAgentIdentity,
+		tracing.AttributionSourceDerivedRoot,
+		tracing.AttributionSourceDefault,
+	} {
+		llmdFairnessIDOverflowCounter.WithLabelValues(source, inferencePool)
+	}
+}
+
+// RecordFairnessIDResolution counts a request under its bounded fairness ID and source, and
+// counts an overflow when the label cap folded the ID.
+func RecordFairnessIDResolution(inferencePool, fairnessID, source string) {
+	fairnessID, overflow := metricsutil.BoundFairnessIDWithOverflow(fairnessID)
+	llmdFairnessIDResolvedCounter.WithLabelValues(fairnessID, source, inferencePool).Inc()
+	if overflow {
+		llmdFairnessIDOverflowCounter.WithLabelValues(source, inferencePool).Inc()
+	}
+}
+
+// RecordRequestOutcome records how a request ended.
+func RecordRequestOutcome(modelName, targetModelName string, apiSurface reqcommon.APISurface, fairnessID, priority, outcome, reason string) {
+	modelName, targetModelName = boundModels(modelName, targetModelName)
+	fairnessID = boundFairnessID(fairnessID)
+	llmdRequestOutcomeCounter.WithLabelValues(modelName, targetModelName, fairnessID, priority, apiSurface.String(), outcome, reason).Inc()
 }
 
 // RecordRequestSizes records the request sizes.
@@ -414,6 +460,7 @@ func RecordResponseProcessingLatency(apiSurface reqcommon.APISurface, duration t
 
 // RecordSchedulerAttempt records a scheduling attempt with status and endpoint information.
 func RecordSchedulerAttempt(err error, targetModelName string, result *fwksched.SchedulingResult) {
+	targetModelName = boundModel(targetModelName)
 	if err != nil {
 		llmdSchedulerAttemptsTotal.WithLabelValues(SchedulerStatusFailure, targetModelName, "", "", "").Inc()
 		return
@@ -681,6 +728,34 @@ func RecordDataLayerPollError(sourceType string) {
 // RecordDataLayerExtractError increments the extract error counter for a source/extractor type.
 func RecordDataLayerExtractError(sourceType, extractorType string) {
 	LlmdDataLayerExtractErrorsTotal.WithLabelValues(sourceType, extractorType).Inc()
+}
+
+// Outcome label values of LlmdDataLayerPollsTotal.
+const (
+	// DataLayerPollOutcomeSuccess: Dispatch returned nil before its deadline.
+	DataLayerPollOutcomeSuccess = "success"
+	// DataLayerPollOutcomeError: Dispatch returned an error before its deadline.
+	DataLayerPollOutcomeError = "error"
+	// DataLayerPollOutcomeTimeout: the poll deadline expired, whatever Dispatch returned.
+	DataLayerPollOutcomeTimeout = "timeout"
+)
+
+// InitDataLayerPollMetrics creates the three outcome series and the duration
+// histogram for a source type at zero, so the first non-success poll is an
+// increment on an existing series instead of the birth of a new one, which
+// rate() and increase() would not see. Safe to call repeatedly.
+func InitDataLayerPollMetrics(sourceType string) {
+	for _, outcome := range []string{DataLayerPollOutcomeSuccess, DataLayerPollOutcomeError, DataLayerPollOutcomeTimeout} {
+		LlmdDataLayerPollsTotal.WithLabelValues(sourceType, outcome)
+	}
+	LlmdDataLayerPollDuration.WithLabelValues(sourceType)
+}
+
+// RecordDataLayerPoll counts one poll under its outcome and observes its
+// duration for a source type.
+func RecordDataLayerPoll(sourceType, outcome string, duration time.Duration) {
+	LlmdDataLayerPollsTotal.WithLabelValues(sourceType, outcome).Inc()
+	LlmdDataLayerPollDuration.WithLabelValues(sourceType).Observe(duration.Seconds())
 }
 
 // RecordToolCallingFieldStatuses records outcomes only for fields present on at
