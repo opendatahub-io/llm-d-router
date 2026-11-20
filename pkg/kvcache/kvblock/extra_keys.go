@@ -31,7 +31,25 @@ type MMHash struct {
 // A nil *BlockExtraFeatures means pure text (no taint).
 type BlockExtraFeatures struct {
 	MMHashes []MMHash
+	// FirstContinuation classifies MMHashes[0] from its event offset.
+	// It is not part of the block hash.
+	FirstContinuation MMContinuation
+	// CacheSalt is the request's cache salt, which vLLM appends to the first
+	// block's extra keys after the MM items. The block hash takes it after
+	// MMHashes. Events whose MM items are bare identifiers can't tell the salt
+	// apart, so it stays in MMHashes there.
+	CacheSalt string
 }
+
+// MMContinuation reports whether a block's first MM entry continues the item
+// that ends the previous block, as read from vLLM's block-relative offset.
+type MMContinuation uint8
+
+const (
+	MMContinuationUnknown   MMContinuation = iota // no offset (bare identifier)
+	MMContinuationNew                             // offset >= 0
+	MMContinuationContinues                       // offset < 0
+)
 
 // PlaceholderRange describes a contiguous range of placeholder tokens for one
 // multimodal item within the full token sequence.
@@ -44,8 +62,13 @@ type PlaceholderRange struct {
 // into typed []*BlockExtraFeatures. A first entry equal to loraName is dropped;
 // the request key carries the adapter as its model name. Each other element is
 // either:
-//   - a bare string identifier (vLLM v0.18.0+: mm_feature.identifier), or
-//   - a 2-element [string, int] tuple (legacy format, offset is ignored).
+//   - a bare string identifier (vLLM <= v0.18.x: mm_feature.identifier), or
+//   - a 2-element [string, int] tuple (vLLM v0.19.0+: identifier and
+//     block-relative offset). Only the first entry's offset is kept, as
+//     FirstContinuation.
+//
+// When any entry of the event is a tuple, a bare string is the cache salt and
+// is kept as CacheSalt.
 //
 // nil inner slices produce nil entries. Returns nil if raw is nil.
 func ParseRawExtraKeys(raw [][]any, loraName string) ([]*BlockExtraFeatures, error) {
@@ -53,6 +76,7 @@ func ParseRawExtraKeys(raw [][]any, loraName string) ([]*BlockExtraFeatures, err
 		return nil, nil
 	}
 
+	tupleLayout := hasTupleEntry(raw)
 	result := make([]*BlockExtraFeatures, len(raw))
 	for blockIdx, blockKeys := range raw {
 		if blockKeys == nil {
@@ -66,12 +90,19 @@ func ParseRawExtraKeys(raw [][]any, loraName string) ([]*BlockExtraFeatures, err
 		for _, entry := range blockKeys {
 			switch v := entry.(type) {
 			case string:
-				// vLLM v0.18.0+: bare identifier string per MM item.
+				if tupleLayout {
+					features.CacheSalt = v
+					continue
+				}
+				// vLLM <= v0.18.x: bare identifier string per MM item.
 				features.MMHashes = append(features.MMHashes, MMHash{Hash: v})
 			case []any:
-				// Legacy format: [hash, offset] tuple — extract hash, ignore offset.
+				// [identifier, offset] tuple — extract the identifier.
 				if len(v) >= 1 {
 					if hash, ok := v[0].(string); ok {
+						if len(features.MMHashes) == 0 && len(v) >= 2 {
+							features.FirstContinuation = continuationFromOffset(v[1])
+						}
 						features.MMHashes = append(features.MMHashes, MMHash{Hash: hash})
 					}
 				}
@@ -81,12 +112,47 @@ func ParseRawExtraKeys(raw [][]any, loraName string) ([]*BlockExtraFeatures, err
 			}
 		}
 
-		if len(features.MMHashes) > 0 {
+		if len(features.MMHashes) > 0 || features.CacheSalt != "" {
 			result[blockIdx] = features
 		}
 	}
 
 	return result, nil
+}
+
+func hasTupleEntry(raw [][]any) bool {
+	for _, blockKeys := range raw {
+		for _, entry := range blockKeys {
+			if _, ok := entry.([]any); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func continuationFromOffset(v any) MMContinuation {
+	var off int64
+	switch n := v.(type) {
+	case int:
+		off = int64(n)
+	case int8:
+		off = int64(n)
+	case int16:
+		off = int64(n)
+	case int32:
+		off = int64(n)
+	case int64:
+		off = n
+	case uint8, uint16, uint32, uint64:
+		return MMContinuationNew
+	default:
+		return MMContinuationUnknown
+	}
+	if off < 0 {
+		return MMContinuationContinues
+	}
+	return MMContinuationNew
 }
 
 // mmItem flattens one multimodal placeholder with its content hash for sorting.

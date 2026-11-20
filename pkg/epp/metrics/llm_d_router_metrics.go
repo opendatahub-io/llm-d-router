@@ -57,6 +57,33 @@ var (
 		append(append([]string{}, requestLabelsWithAPISurface...), "error_code"),
 	)
 
+	llmdFairnessIDResolvedCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "fairness_id_resolved_total",
+			Help:      metricsutil.HelpMsgWithStability("Total number of requests by resolved fairness ID and where the ID came from.", compbasemetrics.ALPHA),
+		},
+		[]string{"fairness_id", "source", "inference_pool"},
+	)
+
+	llmdFairnessIDOverflowCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "fairness_id_overflow_total",
+			Help:      metricsutil.HelpMsgWithStability("Total number of requests whose fairness ID was folded into the overflow label value because the label cap was full.", compbasemetrics.ALPHA),
+		},
+		[]string{"source", "inference_pool"},
+	)
+
+	llmdRequestOutcomeCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "request_outcome_total",
+			Help:      metricsutil.HelpMsgWithStability("Total number of requests by how they ended.", compbasemetrics.ALPHA),
+		},
+		append(append([]string{}, requestLabelsWithAPISurface...), "outcome", "reason"),
+	)
+
 	llmdRequestLatencies = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Subsystem: LLMDRouterEndpointPickerSubsystem,
@@ -321,7 +348,7 @@ var llmdInferenceExtensionInfo = prometheus.NewGaugeVec(
 		Name:      "info",
 		Help:      metricsutil.HelpMsgWithStability("General information of the current build of Inference Extension.", compbasemetrics.ALPHA),
 	},
-	[]string{"commit", "build_ref"},
+	[]string{metricsutil.BuildInfoLabelCommit, metricsutil.BuildInfoLabelBuildRef},
 )
 
 // --- llm-d Flow Control Metrics ---
@@ -569,6 +596,29 @@ var (
 			Help:      metricsutil.HelpMsgWithStability("Extract errors per source/extractor type.", compbasemetrics.ALPHA),
 		},
 		[]string{"source_type", "extractor_type"},
+	)
+
+	// LlmdDataLayerPollsTotal records data-source polls per source type and outcome.
+	LlmdDataLayerPollsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "datalayer_polls_total",
+			Help:      metricsutil.HelpMsgWithStability("Data-source polls per source type and outcome.", compbasemetrics.ALPHA),
+		},
+		[]string{"source_type", "outcome"},
+	)
+
+	// LlmdDataLayerPollDuration records data-source poll duration per source type.
+	// The ladder resolves sub-millisecond polls and ends past the 1s per-poll
+	// deadline, so a timed-out poll lands in the last finite bucket.
+	LlmdDataLayerPollDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Subsystem: LLMDRouterEndpointPickerSubsystem,
+			Name:      "datalayer_poll_duration_seconds",
+			Help:      metricsutil.HelpMsgWithStability("Data-source poll duration per source type.", compbasemetrics.ALPHA),
+			Buckets:   []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+		},
+		[]string{"source_type"},
 	)
 )
 
