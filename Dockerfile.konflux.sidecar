@@ -32,7 +32,7 @@ RUN go build -a -o bin/pd-sidecar \
        -ldflags="-X github.com/llm-d/llm-d-router/pkg/sidecar/version.CommitSHA=${COMMIT_SHA} -X github.com/llm-d/llm-d-router/pkg/sidecar/version.BuildRef=${BUILD_REF}" \
        cmd/cmd.go
 
-FROM registry.redhat.io/ubi10/ubi-minimal:10.2@sha256:f0c7b9ae9914fcf183e7c36fc46864903c2d2caf3af327421913ae54b3d29e94
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.2@sha256:f0c7b9ae9914fcf183e7c36fc46864903c2d2caf3af327421913ae54b3d29e94
 
 WORKDIR /
 COPY --from=builder /workspace/bin/pd-sidecar /app/pd-sidecar
