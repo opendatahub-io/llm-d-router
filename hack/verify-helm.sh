@@ -70,6 +70,7 @@ test_cases_llm_d_router_gateway["gke-provider"]="--set provider.name=gke --set r
 test_cases_llm_d_router_gateway["vllm-grpc-gke"]="--set provider.name=gke --set router.modelServers.type=vllm --set router.modelServers.protocol=grpc --set router.modelServers.matchLabels.app=llm-instance-gateway"
 test_cases_llm_d_router_gateway["vllm-grpc-override-gke"]="--set provider.name=gke --set router.modelServers.type=vllm --set router.modelServers.protocol=GRPC --set router.modelServers.grpcServiceName=vllm.grpc.engine.VllmEngine --set router.epp.parsers[0]=vllmgrpc-parser --set router.modelServers.matchLabels.app=llm-instance-gateway"
 test_cases_llm_d_router_gateway["vllm-grpc-empty-service-gke"]="--set provider.name=gke --set router.modelServers.type=vllm --set router.modelServers.protocol=grpc --set router.modelServers.grpcServiceName= --set router.modelServers.matchLabels.app=llm-instance-gateway"
+test_cases_llm_d_router_gateway["sglang-grpc-gke"]="--set provider.name=gke --set router.modelServers.type=sglang --set router.modelServers.protocol=grpc --set router.modelServers.matchLabels.app=llm-instance-gateway"
 test_cases_llm_d_router_gateway["pdb"]="--set router.modelServers.matchLabels.app=llm-instance-gateway --set router.epp.replicas=2 --set router.epp.podDisruptionBudget.enabled=true --set router.epp.podDisruptionBudget.minAvailable=1"
 test_cases_llm_d_router_gateway["multiple-replicas"]="--set router.replicas=3 --set router.modelServers.matchLabels.app=llm-instance-gateway"
 test_cases_llm_d_router_gateway["latency-predictor"]="--set router.latencyPredictor.enabled=true --set router.modelServers.matchLabels.app=llm-instance-gateway"
@@ -126,8 +127,8 @@ for key in "${!test_cases_llm_d_router_gateway[@]}"; do
       echo "Validation failed: h2c appProtocol not found in InferencePool for test: ${key}"
       exit 1
     fi
-    if ! grep -q 'grpcServiceName: "vllm.Inference"' "${gke_yaml}"; then
-      echo "Validation failed: vLLM gRPC HealthCheckPolicy not found in rendered output for test: ${key}"
+    if ! grep -q "type: GRPC" "${gke_yaml}" || grep -q "grpcServiceName:" "${gke_yaml}"; then
+      echo "Validation failed: default vLLM gRPC HealthCheckPolicy did not omit grpcServiceName for test: ${key}"
       exit 1
     fi
   fi
@@ -153,6 +154,23 @@ for key in "${!test_cases_llm_d_router_gateway[@]}"; do
     gke_yaml="${output_dir}/llm-d-router-gateway/templates/gke.yaml"
     if ! grep -q "type: GRPC" "${gke_yaml}" || grep -q "grpcServiceName:" "${gke_yaml}"; then
       echo "Validation failed: empty router.modelServers.grpcServiceName did not omit grpcServiceName on GRPC HealthCheckPolicy for test: ${key}"
+      exit 1
+    fi
+  fi
+
+  if [ "${key}" == "sglang-grpc-gke" ]; then
+    epp_yaml="${output_dir}/llm-d-router-gateway/templates/epp.yaml"
+    gke_yaml="${output_dir}/llm-d-router-gateway/templates/gke.yaml"
+    if ! grep -q "pluginRef: sglanggrpc-parser" "${epp_yaml}" || ! grep -q "pluginRef: passthrough-parser" "${epp_yaml}"; then
+      echo "Validation failed: sglanggrpc-parser and passthrough-parser not found in rendered output for test: ${key}"
+      exit 1
+    fi
+    if ! grep -q 'appProtocol: "kubernetes.io/h2c"' "${epp_yaml}"; then
+      echo "Validation failed: h2c appProtocol not found in InferencePool for test: ${key}"
+      exit 1
+    fi
+    if ! grep -q "type: GRPC" "${gke_yaml}" || grep -q "grpcServiceName:" "${gke_yaml}"; then
+      echo "Validation failed: default SGLang gRPC HealthCheckPolicy did not omit grpcServiceName for test: ${key}"
       exit 1
     fi
   fi
@@ -319,6 +337,7 @@ test_cases_llm_d_router_standalone["proxy-autoscaling"]="--set router.modelServe
 test_cases_llm_d_router_standalone["agentgateway-service"]="--set router.proxy.proxyType=agentgateway --set router.proxy.mode=service --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false --set 'router.modelServers.targetPorts[0].number=8000'"
 test_cases_llm_d_router_standalone["triton"]="--set router.modelServers.type=triton --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false"
 test_cases_llm_d_router_standalone["vllm-grpc"]="--set router.modelServers.type=vllm --set router.modelServers.protocol=grpc --set router.modelServers.targetPorts[0].number=50051 --set router.epp.metricsDataSource.port=8000 --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false"
+test_cases_llm_d_router_standalone["sglang-grpc"]="--set router.modelServers.type=sglang --set router.modelServers.protocol=grpc --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false"
 test_cases_llm_d_router_standalone["tokenizer-python"]="--set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false --set router.tokenizer.enabled=true --set router.tokenizer.modelName=test-model"
 test_cases_llm_d_router_standalone["tokenizer-rust"]="--set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false --set router.tokenizer.enabled=true --set router.tokenizer.flavor=rust --set router.tokenizer.modelName=test-model"
 
@@ -382,6 +401,13 @@ for key in "${!test_cases_llm_d_router_standalone[@]}"; do
     fi
     if ! grep -Eq "^[[:space:]]+port: 8000$" "${epp_yaml}"; then
       echo "Validation failed: metricsDataSource.port not rendered in standalone EPP config for test: ${key}"
+      exit 1
+    fi
+  fi
+  if [ "${key}" == "sglang-grpc" ]; then
+    epp_yaml="${output_dir}/llm-d-router-standalone/templates/epp.yaml"
+    if ! grep -q "pluginRef: sglanggrpc-parser" "${epp_yaml}" || ! grep -q "pluginRef: passthrough-parser" "${epp_yaml}"; then
+      echo "Validation failed: sglanggrpc-parser and passthrough-parser not found in rendered output for test: ${key}"
       exit 1
     fi
   fi
@@ -929,6 +955,37 @@ for chart in llm-d-router-gateway llm-d-router-standalone; do
   for bad_metrics_port in 0 -1 65536 abc; do
     if ${HELM} template "${SCRIPT_ROOT}/config/charts/${chart}" --set router.modelServers.matchLabels.app=llm-instance-gateway --set "router.epp.metricsDataSource.port=${bad_metrics_port}" >/dev/null 2>&1; then
       echo "${chart} accepted invalid router.epp.metricsDataSource.port=${bad_metrics_port}"
+      exit 1
+    fi
+  done
+done
+
+echo "Verifying router.modelServers.type and protocol case normalization..."
+for chart in llm-d-router-gateway llm-d-router-standalone; do
+  for engine_case in \
+    "vLLM:GRPC:absent:vllminference-parser,vllmgrpc-parser,passthrough-parser" \
+    "SGLang:GRPC:sglang:sglanggrpc-parser,passthrough-parser" \
+    "Triton:HTTP:triton:passthrough-parser"; do
+    IFS=: read -r engine_set protocol_set engine_want parsers_want <<< "${engine_case}"
+    engine_render_output="${TEMP_DIR}/${chart}-model-server-type-${engine_set}-${protocol_set}-render.yaml"
+    ${HELM} template "${SCRIPT_ROOT}/config/charts/${chart}" \
+      --set router.modelServers.matchLabels.app=llm-instance-gateway \
+      --set "router.modelServers.type=${engine_set}" \
+      --set "router.modelServers.protocol=${protocol_set}" > "${engine_render_output}" || exit 1
+    engine_config=$("${YQ}" -N 'select(.kind == "ConfigMap" and (.data | has("default-plugins.yaml"))) | .data."default-plugins.yaml"' "${engine_render_output}")
+    extractor_count=$(printf '%s\n' "${engine_config}" | "${YQ}" '[.plugins[] | select(.type == "core-metrics-extractor")] | length')
+    if [ "${extractor_count}" != "1" ]; then
+      echo "${chart} (${engine_set}/${protocol_set}): expected 1 core-metrics-extractor plugin, got ${extractor_count}"
+      exit 1
+    fi
+    default_engine=$(printf '%s\n' "${engine_config}" | "${YQ}" '.plugins[] | select(.type == "core-metrics-extractor") | .parameters.defaultEngine // "absent"')
+    if [ "${default_engine}" != "${engine_want}" ]; then
+      echo "${chart} (${engine_set}/${protocol_set}): expected core-metrics-extractor defaultEngine=${engine_want}, got ${default_engine}"
+      exit 1
+    fi
+    rendered_parsers=$(printf '%s\n' "${engine_config}" | "${YQ}" '.requestHandler.parsers // [] | map(.pluginRef) | join(",")')
+    if [ "${rendered_parsers}" != "${parsers_want}" ]; then
+      echo "${chart} (${engine_set}/${protocol_set}): expected requestHandler.parsers=${parsers_want}, got ${rendered_parsers}"
       exit 1
     fi
   done
@@ -1548,5 +1605,94 @@ if ! "${YQ}" -e '
     )
 ' "${envoy_default_output}" >/dev/null; then
   echo "Expected matching Envoy JSON access log fields and omit_empty_values on both logs" >&2
+  exit 1
+fi
+
+echo "Verifying llm-d-router-standalone as two aliased dependencies of one umbrella chart..."
+umbrella_dir="${TEMP_DIR}/umbrella"
+mkdir -p "${umbrella_dir}"
+standalone_chart_dir="$(cd "${SCRIPT_ROOT}/config/charts/llm-d-router-standalone" && pwd)"
+cat > "${umbrella_dir}/Chart.yaml" <<UMBRELLA
+apiVersion: v2
+name: umbrella
+version: 0.0.0
+dependencies:
+  - name: llm-d-router-standalone
+    alias: router-qwen
+    version: 0.0.0
+    repository: file://${standalone_chart_dir}
+  - name: llm-d-router-standalone
+    alias: router-gemma
+    version: 0.0.0
+    repository: file://${standalone_chart_dir}
+UMBRELLA
+cat > "${umbrella_dir}/values.yaml" <<'UMBRELLA'
+router-qwen:
+  router:
+    fullnameOverride: qwen
+    inferencePool:
+      create: false
+    modelServers:
+      matchLabels:
+        app: qwen
+router-gemma:
+  router:
+    fullnameOverride: gemma
+    inferencePool:
+      create: false
+    modelServers:
+      matchLabels:
+        app: gemma
+UMBRELLA
+${HELM} dependency update "${umbrella_dir}" >/dev/null || { echo "Helm dependency update failed for the umbrella chart"; exit 1; }
+umbrella_output_dir="${SCRIPT_ROOT}/bin/llm-d-router-standalone-umbrella-aliases"
+rm -rf "${umbrella_output_dir}"
+${HELM} template umbrella "${umbrella_dir}" --namespace umbrella-ns --output-dir="${umbrella_output_dir}" >/dev/null || { echo "Helm template failed for the umbrella chart"; exit 1; }
+${KUBECTL_VALIDATE} "${umbrella_output_dir}" --local-crds "${TEMP_DIR}" || { echo "Kubectl validation failed for the umbrella chart"; exit 1; }
+# kubectl-validate has no ServiceMonitor schema, so monitoring is enabled only in this unvalidated render.
+umbrella_render="${TEMP_DIR}/umbrella-render.yaml"
+${HELM} template umbrella "${umbrella_dir}" --namespace umbrella-ns --set router-qwen.router.monitoring.prometheus.enabled=true --set router-gemma.router.monitoring.prometheus.enabled=true > "${umbrella_render}" || { echo "Helm template failed for the umbrella chart with monitoring"; exit 1; }
+umbrella_duplicates=$(${YQ} -N 'select(.kind) | .kind + "/" + .metadata.name' "${umbrella_render}" | sort | uniq -d)
+if [ -n "${umbrella_duplicates}" ]; then
+  echo "Umbrella chart rendered duplicate resources:"
+  echo "${umbrella_duplicates}"
+  exit 1
+fi
+for base in qwen gemma; do
+  proxy_container=$(${YQ} -N "select(.kind == \"Deployment\" and .metadata.name == \"${base}-epp\") | .spec.template.spec.containers[] | select(.name == \"envoy-proxy\") | (.args | length | tostring) + \":\" + (.ports | length | tostring)" "${umbrella_render}")
+  case "${proxy_container}" in
+    ""|0:*|*:0) echo "Umbrella instance ${base}: Deployment ${base}-epp has no envoy-proxy container with args and ports (got '${proxy_container}')"; exit 1 ;;
+  esac
+  for resource in "ConfigMap/${base}-envoy" "Service/${base}-epp-model-servers" "Secret/${base}-metrics-reader-secret"; do
+    if ! ${YQ} -N 'select(.kind) | .kind + "/" + .metadata.name' "${umbrella_render}" | grep -qx -- "${resource}"; then
+      echo "Umbrella instance ${base}: ${resource} not rendered"
+      exit 1
+    fi
+  done
+done
+
+echo "Verifying llm-d-router-standalone keeps its proxy presets when published under a suffixed name..."
+suffixed_chart_dir="${TEMP_DIR}/suffixed/llm-d-router-standalone"
+mkdir -p "$(dirname "${suffixed_chart_dir}")"
+cp -r "${SCRIPT_ROOT}/config/charts/llm-d-router-standalone" "${suffixed_chart_dir}"
+${YQ} -i '.name = .name + "-dev"' "${suffixed_chart_dir}/Chart.yaml"
+suffixed_render="${TEMP_DIR}/suffixed-render.yaml"
+${HELM} template suffixed "${suffixed_chart_dir}" --namespace suffixed-ns --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false > "${suffixed_render}" || { echo "Helm template failed for the suffixed chart"; exit 1; }
+if ! arg_rendered "${suffixed_render}" --concurrency 8; then
+  echo "Suffixed chart did not render the Envoy preset args"
+  exit 1
+fi
+for resource in "ConfigMap/suffixed-envoy" "Service/suffixed-epp-model-servers"; do
+  if ! ${YQ} -N 'select(.kind) | .kind + "/" + .metadata.name' "${suffixed_render}" | grep -qx -- "${resource}"; then
+    echo "Suffixed chart: ${resource} not rendered"
+    exit 1
+  fi
+done
+
+echo "Verifying a whitespace-only router.fullnameOverride falls back to the release name..."
+blank_override_render="${TEMP_DIR}/blank-override-render.yaml"
+${HELM} template blank ${SCRIPT_ROOT}/config/charts/llm-d-router-standalone --set router.modelServers.matchLabels.app=llm-instance-gateway --set router.inferencePool.create=false --set-string 'router.fullnameOverride= ' > "${blank_override_render}" || { echo "Helm template failed with a whitespace-only fullnameOverride"; exit 1; }
+if ! ${YQ} -N 'select(.kind == "Deployment") | .metadata.name' "${blank_override_render}" | grep -qx -- "blank-epp"; then
+  echo "Whitespace-only router.fullnameOverride did not fall back to the release name"
   exit 1
 fi
