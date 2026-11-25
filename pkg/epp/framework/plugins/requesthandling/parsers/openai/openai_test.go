@@ -3161,7 +3161,7 @@ func TestOpenAIParser_ParseRequestTranscriptionsInvalidForms(t *testing.T) {
 	body, ct := buildVideoForm(t, videoFormPart{name: "model", value: "whisper-large-v3"})
 	invalidStream, invalidCT := buildVideoForm(t,
 		videoFormPart{name: "model", value: "whisper-large-v3"},
-		videoFormPart{name: "stream", value: "yes"})
+		videoFormPart{name: "stream", value: "maybe"})
 	if _, err := parser.ParseRequest(context.Background(), invalidStream, headersFor(invalidCT)); err == nil {
 		t.Error("ParseRequest accepted an invalid stream field")
 	}
@@ -3408,5 +3408,141 @@ func TestOpenAIParser_ParseRequestTextToSpeechNullFields(t *testing.T) {
 	}
 	if diff := cmp.Diff(absent.Body.TextToSpeech, withNull.Body.TextToSpeech); diff != "" {
 		t.Errorf("null and absent conditioning must parse to the same body (-absent +null):\n%s", diff)
+	}
+}
+
+func TestOpenAIParser_ParseResponse_Completion(t *testing.T) {
+	parser := NewOpenAIParser()
+	body := func(choices string) []byte {
+		return []byte(`{"object":"text_completion","choices":` + choices + `,"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`)
+	}
+	tests := []struct {
+		name string
+		body []byte
+		want *fwkrh.Completion
+	}{
+		{name: "stop", body: body(`[{"index":0,"text":"hello","finish_reason":"stop"}]`), want: &fwkrh.Completion{Text: "hello", FinishReason: "stop"}},
+		{name: "length", body: body(`[{"index":0,"text":"partial","finish_reason":"length"}]`), want: &fwkrh.Completion{Text: "partial", FinishReason: "length"}},
+		{name: "several choices", body: body(`[{"index":0,"text":"a","finish_reason":"stop"},{"index":1,"text":"b","finish_reason":"stop"}]`)},
+		{name: "unfinished choice", body: body(`[{"index":0,"text":"a","finish_reason":null}]`)},
+		{name: "aborted choice", body: body(`[{"index":0,"text":"a","finish_reason":"abort"}]`)},
+		{name: "no text", body: body(`[{"index":0,"finish_reason":"stop"}]`)},
+		{name: "chat completion", body: []byte(`{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"text_completion"},"finish_reason":"stop"}]}`)},
+		{name: "error body", body: []byte(`{"object":"error","message":"text_completion failed"}`)},
+		{
+			name: "body over the size limit",
+			body: body(`[{"index":0,"text":"` + strings.Repeat("a", maxCompletionResponseBytes) + `","finish_reason":"stop"}]`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parser.ParseResponse(context.Background(), tt.body, nil, true)
+			if err != nil {
+				t.Fatalf("ParseResponse() error = %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got.Completion); diff != "" {
+				t.Errorf("Completion mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestOpenAIParser_ParseResponse_UsageWithUnexpectedChoices checks that the
+// completion fields decoded alongside usage do not change what usage returns.
+func TestOpenAIParser_ParseResponse_UsageWithUnexpectedChoices(t *testing.T) {
+	parser := NewOpenAIParser()
+	wantUsage := &request.Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}
+	usage := `"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}`
+	for name, body := range map[string]string{
+		"choices not an array": `{"object":"text_completion","choices":"x",` + usage + `}`,
+		"text not a string":    `{"object":"text_completion","choices":[{"text":7,"finish_reason":"stop"}],` + usage + `}`,
+		"object not a string":  `{"object":1,"choices":[{"text":"a","finish_reason":"stop"}],` + usage + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := parser.ParseResponse(context.Background(), []byte(body), nil, true)
+			if err != nil {
+				t.Fatalf("ParseResponse() error = %v", err)
+			}
+			if diff := cmp.Diff(wantUsage, got.Usage); diff != "" {
+				t.Errorf("Usage mismatch (-want +got):\n%s", diff)
+			}
+			if got.Completion != nil {
+				t.Errorf("Completion = %+v, want nil", got.Completion)
+			}
+		})
+	}
+	if _, err := parser.ParseResponse(context.Background(), []byte(`{"usage":"x"}`), nil, true); err == nil {
+		t.Error("ParseResponse() error = nil for a usage field that is not an object")
+	}
+}
+
+func BenchmarkOpenAIParser_ParseResponse(b *testing.B) {
+	parser := NewOpenAIParser()
+	text := strings.Repeat("lorem ipsum ", 2000)
+	for name, body := range map[string][]byte{
+		"completions": []byte(`{"object":"text_completion","choices":[{"index":0,"text":"` + text + `","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`),
+		"chat":        []byte(`{"object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"` + text + `"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`),
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := parser.ParseResponse(context.Background(), body, nil, true); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// The model servers parse a form boolean with pydantic, which accepts these
+// values in any letter case.
+func TestOpenAIParser_ParseRequestFormStream(t *testing.T) {
+	parser := NewOpenAIParser()
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"true", true}, {"True", true}, {"tRUE", true}, {"1", true}, {"t", true}, {"yes", true}, {"Y", true}, {"on", true},
+		{"false", false}, {"FALSE", false}, {"0", false}, {"f", false}, {"no", false}, {"NO", false}, {"n", false}, {"off", false},
+	} {
+		for _, path := range []string{"/v1/audio/transcriptions", "/v1/audio/translations"} {
+			audio, ct := buildVideoForm(t,
+				videoFormPart{name: "model", value: "whisper-large-v3"},
+				videoFormPart{name: "stream", value: tc.value})
+			result, err := parser.ParseRequest(context.Background(), audio,
+				map[string]string{":path": path, reqcommon.HeaderContentType: ct})
+			if err != nil {
+				t.Fatalf("%s stream=%q: %v", path, tc.value, err)
+			}
+			if result.Body.Stream != tc.want {
+				t.Errorf("%s stream=%q: Stream = %v, want %v", path, tc.value, result.Body.Stream, tc.want)
+			}
+		}
+
+		edit, ct := buildMultipartBody(t, map[string]string{"prompt": "make it night", "stream": tc.value})
+		result, err := parser.ParseRequest(context.Background(), edit,
+			map[string]string{":path": "/v1/images/edits", reqcommon.HeaderContentType: ct})
+		if err != nil {
+			t.Fatalf("images edits stream=%q: %v", tc.value, err)
+		}
+		if result.Body.Stream != tc.want {
+			t.Errorf("images edits stream=%q: Stream = %v, want %v", tc.value, result.Body.Stream, tc.want)
+		}
+	}
+	for _, value := range []string{"maybe", " true", ""} {
+		edit, ct := buildMultipartBody(t, map[string]string{"prompt": "make it night", "stream": value})
+		if _, err := parser.ParseRequest(context.Background(), edit,
+			map[string]string{":path": "/v1/images/edits", reqcommon.HeaderContentType: ct}); err == nil {
+			t.Errorf("images edits accepted stream=%q", value)
+		}
+		for _, path := range []string{"/v1/audio/transcriptions", "/v1/audio/translations"} {
+			audio, ct := buildVideoForm(t,
+				videoFormPart{name: "model", value: "whisper-large-v3"},
+				videoFormPart{name: "stream", value: value})
+			if _, err := parser.ParseRequest(context.Background(), audio,
+				map[string]string{":path": path, reqcommon.HeaderContentType: ct}); err == nil {
+				t.Errorf("%s accepted stream=%q", path, value)
+			}
+		}
 	}
 }

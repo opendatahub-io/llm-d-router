@@ -921,6 +921,11 @@ only when that plugin is configured and records the related prediction, observat
 | `llm_d_epp_request_slo_violation_total` | Counter | `plugin_name`, `plugin_type`, `model_name`, `target_model_name`, `type` | SLO violations. |
 | `llm_d_epp_request_prediction_failures_total` | Counter | `plugin_name`, `plugin_type`, `reason` | Failed latency prediction attempts (`request_error`, `nil_response`, `length_mismatch`, `predictor_unavailable`). |
 
+`model_name` is the model in the request body and `target_model_name` is the model after any
+InferenceModelRewrite. Both share the model label cap described in [Metrics catalog](#metrics-catalog):
+the histograms and the violation counter fold names past the cap into `other`, and the
+`inference_request_metric` gauges skip them.
+
 ### Disaggregation
 
 The EPP disaggregation metrics come from two different plugins.
@@ -997,6 +1002,7 @@ These metrics are owned by the EPP Flow Control layer.
 | `llm_d_epp_flow_control_pool_saturation` | Gauge | `inference_pool`, `stage` | Saturation signal used to gate dispatch. |
 | `llm_d_epp_flow_control_stale_endpoints` | Gauge | `detector`, `stage` | Candidate endpoints with missing or stale metrics. |
 | `llm_d_epp_flow_control_detector_saturation` | Gauge | `detector`, `stage` | Saturation reported by each child of a `max-saturation-detector`, from its most recent evaluation. `stage` is `prefill`, `decode`, or empty when the pool has no endpoints. |
+| `llm_d_epp_flow_control_detector_capacity` | Gauge | `detector`, `stage`, `unit` | Aggregate capacity of the endpoints a `concurrency-detector` evaluated, from its most recent evaluation: the sum of per-endpoint `maxConcurrency` (`unit="requests"`) or `maxTokenConcurrency` (`unit="tokens"`), with `endpointOverrides` applied. Only the unit(s) the detector's `concurrencyMode` evaluates are exported. `stage` as for `llm_d_epp_flow_control_detector_saturation`. Interleaved (`prefill-decode`) endpoints are in both stage partitions, so their capacity is reported under both `stage="prefill"` and `stage="decode"` and summing across stages double counts them. Defined only when flow control is enabled. |
 | `llm_d_epp_flow_control_capacity_utilization_requests` | Gauge | `priority`, `inference_pool` | Per-priority-band request capacity use. |
 | `llm_d_epp_flow_control_capacity_utilization_bytes` | Gauge | `priority`, `inference_pool` | Per-priority-band byte capacity use. |
 | `llm_d_epp_flow_control_global_capacity_utilization_requests` | Gauge | `inference_pool` | Global request capacity use. |
@@ -1250,6 +1256,7 @@ use the labels shown below.
 | `llm_d_epp_kv_cache_events_dedup_removed_hashes_forwarded_total` | Counter | - | Deduplicated removal hashes forwarded. |
 | `llm_d_epp_kv_cache_events_stores_skipped_total` | Counter | `cache_kind`, `reason` | KV store events skipped before prefix indexing. |
 | `llm_d_epp_kv_cache_events_removals_skipped_total` | Counter | `cache_kind`, `reason` | KV removal events skipped before prefix indexing. |
+| `llm_d_epp_kv_cache_events_unknown_tags_skipped_total` | Counter | `tag` | KV events skipped because the engine adapter does not know their tag. |
 | `llm_d_epp_kv_cache_events_active_subscribers` | Gauge | - | ZMQ subscribers currently managed. |
 | `llm_d_epp_kv_cache_events_subscriber_reconnections_total` | Counter | `pod_identifier` | ZMQ subscriber reconnection attempts. |
 | `llm_d_epp_kv_cache_events_messages_received_total` | Counter | `pod_identifier` | Messages received from ZMQ subscribers. |
@@ -1258,6 +1265,17 @@ use the labels shown below.
 | `llm_d_epp_kv_cache_events_snapshot_load_duration_seconds` | Histogram | - | Successful snapshot loads, from the request until the batches are queued for indexing. Failed and unavailable snapshots are counted in `llm_d_epp_kv_cache_events_zmq_errors_total` with `operation="snapshot"`. |
 | `llm_d_epp_kv_cache_events_pool_queue_depth` | Gauge | - | Messages queued across event-pool workers. |
 | `llm_d_epp_kv_cache_events_pool_capacity` | Gauge | - | Event-pool worker capacity. |
+
+A vLLM release can publish an event type that the router's vLLM adapter does not know. The adapter
+skips such an event and applies the other events in the same message to the index.
+`llm_d_epp_kv_cache_events_unknown_tags_skipped_total` counts each skipped event, whether or not
+`enableMetrics` is set. The `tag` label is the event tag as the engine sent it. The label takes at
+most 32 distinct tags plus `other`, and the cap rules in [Metrics catalog](#metrics-catalog) apply.
+An empty tag is reported as `empty` and does not count toward the 32. A series appears when the
+first event with that tag is skipped. The EPP also logs
+`Skipping KV events with an unknown tag` at INFO level the first time it skips each `tag` value,
+with the pod and model of that event. A rising count for a tag means the engine sends an event type
+that this router version ignores.
 
 ### P/D sidecar request and stage metrics
 
