@@ -23,8 +23,11 @@ Pipeline per request:
 - (`PreRequest`) Speculative-index the selected endpoint(s) with TTL eviction.
 - (`EndpointExtractor`) Per-pod ZMQ subscriber lifecycle on add/delete.
 
-Requires `TokenizedPrompt` on the request — set by a `token-producer`
-upstream. No-op otherwise.
+Requires `TokenizedPrompt` on the request from a `token-producer` that emits exact
+engine tokens (`exact_tokens: "true"`). Configure `backend: vllm` for text pools or
+`backend: passthrough` for pre-tokenized pools. EPP rejects `backend: estimate` at
+startup so byte-packed pseudo-tokens never enter the KV-block index. A request with
+no `TokenizedPrompt` is a no-op.
 
 ## Parameters
 
@@ -73,6 +76,17 @@ requires a vLLM build with
 [vllm-project/vllm#57789](https://github.com/vllm-project/vllm/pull/57789),
 whose wire format can still change.
 
+When a pod serves several data-parallel ranks behind its port (see
+[Data-parallel ranks behind one port](../../../../../../../docs/data-parallel-ranks.md)), each rank of the pod
+is its own endpoint on the pod's address and port. With pod discovery, each
+rank's events reach the index under `<address>:<port>/rank-<RankIndex>`, so the
+ranks of one pod are scored separately. Without pod discovery, the index learns
+a pod's identity from the event topic, and all ranks of a pod share one score.
+
+A rank endpoint's subscriber dials `socketPort` plus the endpoint's
+data-parallel rank, as vLLM offsets each engine's publisher, replay and snapshot
+ports.
+
 A subscriber that joins mid-stream, or sees the engine restart, loads the
 snapshot instead of replaying buffered events, then follows live events after
 the snapshot's sequence number. A restart shows as a sequence that moves
@@ -82,6 +96,10 @@ the snapshot as well. While the snapshot fails, is unavailable or comes from
 another publisher identity, the pod is indexed from live events alone, as it
 is with neither port set, and the load is retried after the replay cooldown.
 A snapshot that loads replaces that state.
+
+`kvEventsConfig.podDiscoveryConfig.maxConcurrentReplays` (default 8) bounds
+the snapshot loads and replays in flight across all pods. Pods beyond it wait
+for a slot, and a snapshot's timeout starts once it holds one.
 
 See [llm-d-kv-cache/docs/configuration.md](https://github.com/llm-d/llm-d-kv-cache/blob/main/docs/configuration.md)
 for nested parameter details.
